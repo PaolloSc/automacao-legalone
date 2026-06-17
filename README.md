@@ -1,6 +1,8 @@
 <div align="center">
 
-# ⚖️ Automação LegalOne
+<img src="docs/assets/banner.svg" alt="Automação LegalOne" width="100%"/>
+
+<br/><br/>
 
 **Cadastro automático de processos judiciais no LegalOne a partir de petições.**
 
