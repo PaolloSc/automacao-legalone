@@ -1,0 +1,38 @@
+# ===== Segredos / ambiente =====
+.env
+.env.local
+*.env
+!.env.example
+
+# ===== Sessões de navegador (cookies/login LegalOne) =====
+browser_data/
+browser_data_fallback/
+
+# ===== Dados reais de processos / clientes (LGPD) =====
+*.log
+processos_cadastrados.log
+processos_erro.log
+ultimo_processo.txt
+debug_forms_dump.html
+*_dump.html
+
+# ===== Screenshots (podem conter dados de clientes) =====
+qa_screenshots/
+guardian_screenshots/
+logs/
+
+# ===== Python =====
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ===== IDE / SO =====
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

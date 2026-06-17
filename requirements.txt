@@ -1,0 +1,21 @@
+playwright>=1.40
+requests>=2.31
+beautifulsoup4>=4.12
+lxml>=4.9
+python-dotenv>=1.0
+# Scrapling — parser HTML resiliente para extração de campos
+scrapling>=0.2
+
+# Opção A — extração via LLM (Groq grátis)
+groq>=0.11
+
+# Opção B — webhook OCR (PDF/DOCX/DOC → campos)
+fastapi>=0.110
+uvicorn>=0.27
+pydantic>=2.0
+python-docx>=1.1
+azure-ai-documentintelligence>=1.0
+
+# Testes — mock de HTTP (sem rede real)
+responses>=0.25
+pytest>=8.0
