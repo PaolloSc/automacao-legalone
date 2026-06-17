@@ -1,0 +1,21 @@
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = [
+    ".venv",
+    "browser_data",
+    "browser_data_fallback",
+    "__pycache__",
+]
+
+[tool.ruff.lint]
+# E/F = pycodestyle/pyflakes; I = isort; UP = pyupgrade; B = bugbear
+select = ["E", "F", "I", "UP", "B"]
+ignore = [
+    "E501",  # line too long (tratado pelo formatter)
+    "B008",  # function call in argument default (FastAPI Depends/File)
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
