@@ -172,22 +172,22 @@ Regras:
 
         try:
             # Tenta antiword (se instalado)
-            result = subprocess.run(
-                ['antiword', tmp_path],
-                capture_output=True, text=True, timeout=30,
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                texto = result.stdout.strip()
-                logger.info(f"DOC (antiword) extraiu {len(texto)} caracteres")
-                return texto
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
+            try:
+                result = subprocess.run(
+                    ['antiword', tmp_path],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    texto = result.stdout.strip()
+                    logger.info(f"DOC (antiword) extraiu {len(texto)} caracteres")
+                    return texto
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                pass
 
-        # Fallback: envia pro Document Intelligence (aceita DOC)
-        logger.info("[DOC] antiword indisponível, usando Document Intelligence como fallback")
-        if isinstance(caminho_ou_bytes, bytes):
-            return self.ocr_bytes(caminho_ou_bytes)
-        else:
+            # Fallback: envia pro Document Intelligence (aceita DOC)
+            logger.info("[DOC] antiword indisponível, usando Document Intelligence como fallback")
+            if isinstance(caminho_ou_bytes, bytes):
+                return self.ocr_bytes(caminho_ou_bytes)
             return self.ocr_pdf(tmp_path)
         finally:
             if isinstance(caminho_ou_bytes, bytes):
