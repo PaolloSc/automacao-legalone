@@ -343,6 +343,50 @@ class AutomacaoLegalOne:
                     aviso = f"CNPJ INVÁLIDO em '{campo}': {cnpj} — conferir o CNPJ real e corrigir no LegalOne"
                     dados_processo.setdefault('_qa_warnings', []).append(aviso)
                     logger.warning(f"[QA] ⚠ {aviso}")
+                else:
+                    self._conferir_cnpj_receita(campo, valor, cnpj, dados_processo)
+
+    _STOPWORDS_RAZAO = {
+        'LTDA', 'SA', 'S.A', 'S/A', 'ME', 'EPP', 'EIRELI', 'CIA',
+        'DE', 'DO', 'DA', 'DOS', 'DAS', 'E', 'EM', 'COMERCIO', 'SERVICOS',
+    }
+
+    @classmethod
+    def _tokens_razao(cls, texto: str) -> set[str]:
+        return {
+            t for t in re.split(r"\W+", texto.upper())
+            if len(t) >= 3 and t not in cls._STOPWORDS_RAZAO and not t.isdigit()
+        }
+
+    def _conferir_cnpj_receita(self, campo: str, valor: str, cnpj: str, dados_processo: dict) -> None:
+        """Consulta o CNPJ na Receita (BrasilAPI) e alerta se não existir ou a razão social não bater."""
+        num = re.sub(r"\D", "", cnpj)
+        try:
+            resp = requests.get(f"https://brasilapi.com.br/api/cnpj/v1/{num}", timeout=15)
+        except requests.RequestException as e:
+            logger.warning(f"[QA] Receita indisponível para CNPJ {cnpj}: {e}")
+            return
+        if resp.status_code == 404:
+            aviso = f"CNPJ {cnpj} em '{campo}' NÃO consta na Receita Federal — conferir o CNPJ real"
+            dados_processo.setdefault('_qa_warnings', []).append(aviso)
+            logger.warning(f"[QA] ⚠ {aviso}")
+            return
+        if resp.status_code != 200:
+            logger.warning(f"[QA] Receita retornou {resp.status_code} para CNPJ {cnpj} — conferência pulada")
+            return
+        razao = (resp.json().get('razao_social') or '').strip()
+        if not razao:
+            return
+        # ponytail: comparação por interseção de palavras; trocar por fuzzy match se der falso alarme
+        if self._tokens_razao(razao) & self._tokens_razao(valor):
+            logger.info(f"[QA] ✅ CNPJ {cnpj} confere na Receita: {razao}")
+        else:
+            aviso = (
+                f"CNPJ {cnpj} em '{campo}' pertence a '{razao}' na Receita — "
+                f"não confere com o nome informado"
+            )
+            dados_processo.setdefault('_qa_warnings', []).append(aviso)
+            logger.warning(f"[QA] ⚠ {aviso}")
 
     def _destinatarios_erro(self) -> list[str]:
         bruto = (
