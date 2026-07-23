@@ -993,7 +993,7 @@ class AutomacaoLegalOne:
             'subject': f"[OK CADASTRO] CNJ {cnj} — cadastro concluído",
             'text': texto,
             'html': html,
-            'to': ['destinatario@exemplo.com'],
+            'to': self._destinatarios_erro(),
         }
 
         tentativas = [

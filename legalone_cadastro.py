@@ -3389,18 +3389,22 @@ class LegalOneCadastro:
             pass
         time.sleep(2)
 
-        try:
-            password_field = self.page.wait_for_selector(
-                'input#password, input[name="password"], input[type="password"]',
-                timeout=15000,
-            )
-        except Exception:
-            password_field = self.page.wait_for_selector('input[type="password"]', timeout=10000)
-        if password_field:
-            password_field.click()
-            time.sleep(0.5)
-            password_field.fill(self.password)
-            logger.info("   OK Senha preenchida (Legal One Firm)")
+        # Auth0 re-renderiza o form após a navegação; page.fill re-localiza o
+        # campo a cada tentativa (handle antigo fica "not attached to the DOM")
+        pwd_sel = 'input#password, input[name="password"], input[type="password"]'
+        self.page.wait_for_selector(pwd_sel, timeout=15000)
+        ultimo_erro = None
+        for _ in range(3):
+            try:
+                self.page.fill(pwd_sel, self.password, timeout=10000)
+                ultimo_erro = None
+                break
+            except Exception as e:
+                ultimo_erro = e
+                time.sleep(1.5)
+        if ultimo_erro:
+            raise ultimo_erro
+        logger.info("   OK Senha preenchida (Legal One Firm)")
 
         try:
             login_btn = self.page.wait_for_selector(
