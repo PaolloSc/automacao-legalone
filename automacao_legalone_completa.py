@@ -9,6 +9,7 @@ import sys
 import threading
 import concurrent.futures
 import os
+import re
 import smtplib
 import traceback
 import unicodedata
@@ -310,6 +311,39 @@ class AutomacaoLegalOne:
         dados_base['outros_dados'] = outros
         return dados_base
 
+    _CNPJ_RE = re.compile(r"\b\d{2}\.?\d{3}\.?\d{3}/\d{4}-?\d{2}\b")
+
+    @staticmethod
+    def _cnpj_dv_ok(cnpj: str) -> bool:
+        """Valida os dígitos verificadores de um CNPJ."""
+        nums = [int(c) for c in re.sub(r"\D", "", cnpj)]
+        if len(nums) != 14 or len(set(nums)) == 1:
+            return False
+        for n_dig, pesos in (
+            (12, [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]),
+            (13, [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]),
+        ):
+            resto = sum(d * p for d, p in zip(nums[:n_dig], pesos)) % 11
+            if nums[n_dig] != (0 if resto < 2 else 11 - resto):
+                return False
+        return True
+
+    def _validar_cnpjs(self, dados_processo: dict) -> None:
+        """CNPJ inválido/placeholder vira warning no QA e no email de conferência (não aborta)."""
+        vistos = set()
+        # list(): o warning insere '_qa_warnings' no próprio dict durante a iteração
+        for campo, valor in list(dados_processo.items()):
+            if not isinstance(valor, str):
+                continue
+            for cnpj in self._CNPJ_RE.findall(valor):
+                if cnpj in vistos:
+                    continue
+                vistos.add(cnpj)
+                if not self._cnpj_dv_ok(cnpj):
+                    aviso = f"CNPJ INVÁLIDO em '{campo}': {cnpj} — conferir o CNPJ real e corrigir no LegalOne"
+                    dados_processo.setdefault('_qa_warnings', []).append(aviso)
+                    logger.warning(f"[QA] ⚠ {aviso}")
+
     def _destinatarios_erro(self) -> list[str]:
         bruto = (
             os.getenv('LEGALONE_ERROR_EMAIL_TO')
@@ -584,6 +618,9 @@ class AutomacaoLegalOne:
 
             # Mostra resumo simples
             logger.info(f"✅ Processo extraído: CNJ {dados_processo.get('cnj', 'N/A')}")
+
+            # CNPJ de teste/inválido não pode entrar silenciosamente no cadastro
+            self._validar_cnpjs(dados_processo)
 
             # --- INTELIGÊNCIA DE CLASSIFICAÇÃO (Claude Brain) ---
             tipo_tarefa = "GENERICO"
