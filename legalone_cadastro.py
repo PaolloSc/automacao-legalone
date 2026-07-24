@@ -108,6 +108,7 @@ class LegalOneCadastro:
         self.context = None
         self.page = None
         self._captura_em_rascunhos = False
+        self._rascunho_reiniciado = False
         self._fluxo_pre_cadastro = False
         self._processo_ja_cadastrado = False
         self.last_error_reason = None
@@ -184,7 +185,7 @@ class LegalOneCadastro:
                 "dom": ["#CNJNumberAutomaticModal"],
             },
             "pre_cadastro": {
-                "url": ["/draft-litigation"],
+                "url": ["/processos/importer", "/draft-litigation"],
                 "dom": ["form"],
             },
             "edicao_processo": {
@@ -516,6 +517,8 @@ class LegalOneCadastro:
 
         seletores_pre_cadastro = [
             "#menuProcessosSubmenuImporter",
+            'a[href="/processos/importer"]',
+            'a[href*="/processos/importer"]',
             'a[href="/draft-litigation"]',
             'a[href*="/draft-litigation"]',
             'a:has-text("PrÃ©-cadastro")',
@@ -553,10 +556,21 @@ class LegalOneCadastro:
 
         # Fallback por rota direta
         try:
-            self.page.goto("https://carvalhofurtadoadv.novajus.com.br/draft-litigation", wait_until="domcontentloaded", timeout=15000)
-            self._aguardar_carregamento(15000)
-            time.sleep(2)
-            if "/draft-litigation" in (self.page.url or ""):
+            # "commit" resolve assim que a navegacao inicia; a VM nao aguenta
+            # esperar todos os recursos do LegalOne (domcontentloaded estourava)
+            self.page.goto("https://carvalhofurtadoadv.novajus.com.br/processos/importer", wait_until="commit", timeout=90000)
+            time.sleep(12)
+            pagina_erro = False
+            try:
+                pagina_erro = bool(self.page.evaluate(
+                    "() => /não foi encontrada|not found/i.test(document.body.innerText || '')"
+                ))
+            except Exception:
+                pass
+            if pagina_erro:
+                logger.error("   Rota de Pre-cadastro retornou pagina de erro")
+                return False
+            if "/processos/importer" in (self.page.url or "") or "/draft-litigation" in (self.page.url or ""):
                 logger.info("   âœ“ Acessou 'PrÃ©-cadastro' por rota direta")
                 return True
         except Exception:
@@ -565,63 +579,110 @@ class LegalOneCadastro:
         logger.error("   âŒ NÃ£o foi possÃ­vel navegar para 'PrÃ©-cadastro'")
         return False
 
-    def _continuar_preenchimento_rascunho(self, cnj: str) -> bool:
-        """Abre o rascunho em Pre-cadastro pelo caminho correto: Editar > Continuar preenchimento.
+    _JS_ACAO_CARD = """
+        (args) => {
+          const {cnj, acao} = args;
+          const alvo = String(cnj).replace(/\D/g, '');
+          const norm = s => String(s || '').replace(/\D/g, '');
+          const cards = [...document.querySelectorAll('div,li,article,section')].filter(n => {
+            const txt = n.innerText || '';
+            return norm(txt).includes(alvo) && n.querySelector('button[title]');
+          });
+          if (!cards.length) return 'sem_card';
+          // menor elemento que ainda contem o CNJ e os botoes = o card da linha
+          cards.sort((a, b) => (a.innerText || '').length - (b.innerText || '').length);
+          const card = cards[0];
+          const btn = [...card.querySelectorAll('button[title], button')].find(b =>
+            ((b.getAttribute('title') || '') + ' ' + (b.innerText || '')).toLowerCase().includes(acao)
+          );
+          if (!btn) return 'sem_botao';
+          btn.click();
+          return 'ok';
+        }
+    """
 
-        'Alterar' NAO serve para item em Pre-cadastro - so 'Continuar preenchimento'
-        reabre o formulario de cadastro para completar e promover a pasta.
+    def _acao_no_card_rascunho(self, cnj: str, acao: str) -> bool:
+        """Clica em Editar/Excluir/Importar no card do CNJ, procurando em todos os status.
+
+        A lista de Pre-cadastro e feita de cards filtrados por Sucesso/Processando/Erro;
+        o rascunho pode estar em qualquer um deles.
         """
         if not self._ir_para_pre_cadastro():
             return False
-        time.sleep(3)
-
-        # localiza a linha do CNJ e abre o menu de acoes (Editar) daquela linha
-        try:
-            busca = self.page.query_selector('input[type="search"], #Search, input[name="Search"]')
-            if busca:
-                busca.fill(str(cnj))
-                self.page.keyboard.press('Enter')
-                time.sleep(6)
-        except Exception:
-            pass
-
-        for seletor in (
-            f'tr:has-text("{cnj}") a:has-text("Editar")',
-            f'tr:has-text("{cnj}") button:has-text("Editar")',
-            'a:has-text("Editar")',
-            'button:has-text("Editar")',
-            f'tr:has-text("{cnj}") [aria-label*="cao" i], tr:has-text("{cnj}") .dropdown-toggle',
-        ):
+        time.sleep(6)
+        filtros = ['Sucesso', 'Processando', 'Erro']
+        for filtro in [None] + filtros:
+            if filtro:
+                try:
+                    self.page.click(f'button:has-text("{filtro}")', timeout=5000)
+                    time.sleep(6)
+                except Exception:
+                    continue
             try:
-                el = self.page.wait_for_selector(seletor, state='visible', timeout=4000)
-                if el:
-                    el.click()
-                    logger.info(f"   OK 'Editar' clicado ({seletor[:40]})")
-                    time.sleep(2)
-                    break
-            except Exception:
+                r = self.page.evaluate(self._JS_ACAO_CARD, {"cnj": str(cnj), "acao": acao})
+            except Exception as e:
+                logger.warning(f"   [RASCUNHO] Falha ao procurar card: {str(e)[:100]}")
                 continue
+            if r == 'ok':
+                logger.info(f"   [RASCUNHO] '{acao}' clicado no card de {cnj} (status: {filtro or 'padrao'})")
+                time.sleep(4)
+                return True
+            logger.info(f"   [RASCUNHO] status '{filtro or 'padrao'}': {r}")
+        return False
 
+    def _continuar_preenchimento_rascunho(self, cnj: str) -> bool:
+        """Reabre o rascunho: Editar no card > 'Continuar preenchimento'."""
+        if not self._acao_no_card_rascunho(cnj, 'editar'):
+            return False
         for seletor in (
             'a:has-text("Continuar preenchimento")',
             'button:has-text("Continuar preenchimento")',
             '[role="menuitem"]:has-text("Continuar preenchimento")',
-            'a:has-text("Continuar")',
+        ):
+            try:
+                el = self.page.wait_for_selector(seletor, state='visible', timeout=6000)
+                if el:
+                    el.click()
+                    logger.info("   [RASCUNHO] 'Continuar preenchimento' clicado")
+                    time.sleep(8)
+                    self._switch_to_latest_page()
+                    return True
+            except Exception:
+                continue
+        # 'Editar' pode ja abrir o formulario direto
+        try:
+            url = (self.page.url or '')
+            if 'draft-litigation/main' not in url:
+                logger.info(f"   [RASCUNHO] 'Editar' abriu o formulario direto: {url[:80]}")
+                self._switch_to_latest_page()
+                return True
+        except Exception:
+            pass
+        logger.warning("   [RASCUNHO] 'Continuar preenchimento' nao apareceu apos Editar")
+        return False
+
+    def _excluir_rascunho(self, cnj: str) -> bool:
+        """Exclui o rascunho no Pre-cadastro (AÇÃO DESTRUTIVA, opt-in por env)."""
+        if os.getenv('LEGALONE_EXCLUIR_RASCUNHO', '').strip().lower() not in ('1', 'true', 'sim'):
+            logger.info("   [RASCUNHO] Exclusao desativada (LEGALONE_EXCLUIR_RASCUNHO)")
+            return False
+        if not self._acao_no_card_rascunho(cnj, 'excluir'):
+            return False
+        for seletor in (
+            'button:has-text("Confirmar")', 'button:has-text("Sim")',
+            'button.btn-danger:has-text("Excluir")', 'button:has-text("Excluir")',
         ):
             try:
                 el = self.page.wait_for_selector(seletor, state='visible', timeout=5000)
                 if el:
                     el.click()
-                    logger.info("   OK 'Continuar preenchimento' clicado")
-                    self._aguardar_carregamento(20000)
-                    time.sleep(3)
-                    self._switch_to_latest_page()
+                    logger.info(f"   [RASCUNHO] Rascunho de {cnj} excluido")
+                    time.sleep(5)
                     return True
             except Exception:
                 continue
-
-        logger.warning("   AVISO 'Continuar preenchimento' nao encontrado no Pre-cadastro")
-        return False
+        logger.info(f"   [RASCUNHO] Exclusao de {cnj} sem modal de confirmacao (assumindo concluida)")
+        return True
 
     def _clicar_continuar_cadastro_popup(self) -> bool:
         """Tenta clicar em 'Continuar cadastro' no pop-up que aparece apÃ³s 'Pular etapa'.
@@ -3428,6 +3489,13 @@ class LegalOneCadastro:
             self.browser = self.context
             paginas = [p for p in self.context.pages if p and not p.is_closed()]
             self.page = paginas[-1] if paginas else self.context.new_page()
+            # VM pequena + LegalOne pesado: 30s (default) estoura na navegacao
+            try:
+                tmo = float(os.getenv('LEGALONE_TIMEOUT_MS', '90000'))
+                self.context.set_default_navigation_timeout(tmo)
+                self.context.set_default_timeout(tmo)
+            except Exception:
+                pass
 
             # Tenta acessar URL simplificada para validar sessÃ£o
             logger.info("ðŸ” Acessando LegalOne...")
@@ -3945,7 +4013,7 @@ class LegalOneCadastro:
 
             # Se jÃ¡ estiver no contexto de prÃ©-cadastro, aproveita.
             try:
-                if "/draft-litigation" in (self.page.url or ""):
+                if "/processos/importer" in (self.page.url or "") or "/draft-litigation" in (self.page.url or ""):
                     self._fluxo_pre_cadastro = True
                     logger.info("   âœ“ JÃ¡ estÃ¡ em 'PrÃ©-cadastro'")
                     return True
@@ -4390,7 +4458,7 @@ class LegalOneCadastro:
         # 1) foca o campo: preferencia pela arvore AT-SPI (UI nova nao tem os
         # seletores CSS antigos); seletor CSS fica como ultimo recurso
         focado = cua_fallback.clicar_campo(label_form)
-        if not focado:
+        if not focado and seletor:
             try:
                 campo = self.page.wait_for_selector(seletor, state='visible', timeout=4000)
                 campo.click()
@@ -6703,7 +6771,8 @@ class LegalOneCadastro:
                 if self._captura_em_rascunhos:
                     logger.info("âœ… Processo enviado para rascunhos no LegalOne.")
                     # Rascunho so avanca por Editar > Continuar preenchimento
-                    if self._continuar_preenchimento_rascunho(dados_processo.get('cnj')):
+                    cnj_rasc = dados_processo.get('cnj')
+                    if self._continuar_preenchimento_rascunho(cnj_rasc):
                         logger.info("ðŸ“ Rascunho reaberto - completando cadastro...")
                         self.preencher_campos_obrigatorios(dados_processo)
                         self.preencher_detalhes_faltantes(dados_processo)
@@ -6711,6 +6780,14 @@ class LegalOneCadastro:
                             if self.realizar_acoes_pos_cadastro(dados_processo):
                                 return self._confirmar_no_acervo(dados_processo)
                             return False
+                    elif not getattr(self, '_rascunho_reiniciado', False):
+                        # nao deu p/ continuar: descarta o rascunho e refaz do zero (uma vez)
+                        self._rascunho_reiniciado = True
+                        if self._excluir_rascunho(cnj_rasc):
+                            logger.info("Rascunho excluido - refazendo o cadastro do zero...")
+                            self._captura_em_rascunhos = False
+                            self._processo_ja_cadastrado = False
+                            return self.cadastrar_processo(dados_processo)
                     logger.info("ðŸ”„ Processo jÃ¡ existente detectado; abrindo processo para alteraÃ§Ã£o e cadastro de pedidos...")
                     if self.realizar_acoes_pos_cadastro(dados_processo):
                         logger.info("âœ… Fluxo de alteraÃ§Ã£o do processo existente concluÃ­do.")
@@ -6780,7 +6857,14 @@ class LegalOneCadastro:
             except Exception:
                 pass
 
-            # 7. Clica no botÃ£o Salvar
+            # 6c. LegalOne ainda acusa obrigatorios vazios? resolve via cua-driver
+            restantes = self._resolver_pendentes_com_cua(dados_processo)
+            if restantes:
+                dados_processo.setdefault('_qa_warnings', []).append(
+                    'Campos obrigatorios seguiram vazios: ' + ', '.join(restantes)
+                )
+
+            # 7. Clica no botao Salvar
             if self.clicar_salvar():
                 # 8. Realiza aÃ§Ãµes pÃ³s-cadastro (Clicar Proc -> Alterar -> Add Pedido)
                 pos_ok = self.realizar_acoes_pos_cadastro(dados_processo)
@@ -7079,10 +7163,80 @@ class LegalOneCadastro:
         logger.error(f"   [SALVAR] {self.last_error_reason}")
         return False
 
+    _JS_PENDENTES = """
+        () => {
+          const vis = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+          const msgs = [...document.querySelectorAll('*')].filter(e =>
+            vis(e) && e.children.length === 0 && /campo obrigat/i.test(e.innerText || '')
+          );
+          const labels = [];
+          for (const m of msgs) {
+            let n = m, rotulo = '';
+            for (let i = 0; i < 6 && n; i++) {
+              n = n.parentElement;
+              if (!n) break;
+              const lb = n.querySelector('label');
+              if (lb && (lb.innerText || '').trim()) { rotulo = lb.innerText.replace(/[*\s]+$/, '').trim(); break; }
+            }
+            if (rotulo && !labels.includes(rotulo)) labels.push(rotulo);
+          }
+          const btn = document.querySelector('#btnSave')
+            || [...document.querySelectorAll('button')].find(b => /salvar/i.test(b.innerText || '') && !/rascunho/i.test(b.innerText || ''));
+          return {pendentes: labels, salvar_desabilitado: !!(btn && btn.disabled)};
+        }
+    """
+
+    def _campos_obrigatorios_pendentes(self) -> dict:
+        """Le do proprio LegalOne quais obrigatorios seguem vazios ('Campo obrigatorio') e se Salvar esta travado."""
+        try:
+            return self.page.evaluate(self._JS_PENDENTES) or {}
+        except Exception as e:
+            logger.warning(f"   [PENDENTES] Falha ao ler: {str(e)[:100]}")
+            return {}
+
+    def _resolver_pendentes_com_cua(self, dados: dict) -> list:
+        """Ultima linha de defesa: cada obrigatorio ainda vazio e commitado via cua-driver (AT-SPI)."""
+        estado = self._campos_obrigatorios_pendentes()
+        pendentes = estado.get('pendentes') or []
+        if not pendentes:
+            return []
+        logger.warning(f"   [PENDENTES] LegalOne acusa vazios: {pendentes}")
+        dados = dados or {}
+        mapa = {
+            'cliente principal': self._nome_parte(dados.get('cliente') or ''),
+            'contrário principal': self._nome_parte(dados.get('contrario') or ''),
+            'contrario principal': self._nome_parte(dados.get('contrario') or ''),
+            'posição': dados.get('posicao') or 'Reclamante',
+            'posicao': dados.get('posicao') or 'Reclamante',
+            'natureza': dados.get('natureza') or 'Trabalhista',
+            'negociação de contrato de honorários': os.getenv('LEGALONE_NEGOCIACAO_PADRAO', 'Negociação padrão'),
+            'datacloud configurado?': self._sim_ou_nao(dados.get('datacloud_configurado')),
+        }
+        for rotulo in pendentes:
+            valor = mapa.get(rotulo.strip().lower())
+            if not valor:
+                logger.info(f"   [PENDENTES] Sem valor de origem para '{rotulo}'")
+                continue
+            self._fallback_cua_combobox(None, valor, rotulo, rotulo)
+            time.sleep(1)
+        restantes = (self._campos_obrigatorios_pendentes() or {}).get('pendentes') or []
+        logger.info(f"   [PENDENTES] Apos cua-driver ainda vazios: {restantes or 'nenhum'}")
+        return restantes
+
     def clicar_salvar(self):
         """Clica no botÃ£o Salvar ao final do formulÃ¡rio"""
         try:
             logger.info("\nðŸ’¾ Salvando cadastro...")
+            estado = self._campos_obrigatorios_pendentes()
+            if estado.get('salvar_desabilitado'):
+                pend = estado.get('pendentes') or []
+                self.last_error_reason = (
+                    'Salvar DESABILITADO pelo LegalOne - obrigatorios vazios: '
+                    + (', '.join(pend) if pend else 'nao identificados')
+                )
+                logger.error(f"   [SALVAR] {self.last_error_reason}")
+                self._registrar_diagnostico_falha("Salvar desabilitado")
+                return False
 
             # Rola atÃ© o final da pÃ¡gina para ver o botÃ£o
             self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")

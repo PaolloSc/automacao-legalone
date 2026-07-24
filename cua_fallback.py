@@ -104,3 +104,65 @@ def clicar_opcao(texto: str, papeis: tuple = ("list item", "menu item", "option"
 def clicar_campo(label: str) -> bool:
     """Clica no proprio campo/combobox pela label na arvore (dispensa seletor CSS)."""
     return clicar_opcao(label, papeis=("combo box", "entry", "text", "push button", "label"))
+
+
+def arvore_resumida(max_itens: int = 250) -> list[dict]:
+    """Elementos acionaveis da janela (indice/role/label) para a IA decidir."""
+    pid, wid = _janela_chromium()
+    if not pid:
+        return []
+    st = _call(
+        "get_window_state",
+        {"pid": pid, "window_id": wid, "include_screenshot": False, "max_elements": 3000},
+        timeout=120,
+    )
+    itens = []
+    for el in (st or {}).get("elements", []):
+        lbl = (el.get("label") or "").strip()
+        if lbl and el.get("element_index") is not None:
+            itens.append({"i": el["element_index"], "role": el.get("role"), "label": lbl[:80]})
+        if len(itens) >= max_itens:
+            break
+    return itens
+
+
+def clicar_por_indice(indice: int) -> bool:
+    pid, wid = _janela_chromium()
+    if not pid:
+        return False
+    return _call("click", {"pid": pid, "window_id": wid, "element_index": indice}, timeout=30) is not None
+
+
+def clicar_com_ia(objetivo: str, brain=None) -> bool:
+    """cua = olhos (arvore AT-SPI), IA = cerebro: escolhe o elemento e clica.
+
+    Usado quando os seletores deterministicos nao acham o alvo (UI mudou).
+    """
+    itens = arvore_resumida()
+    if not itens:
+        return False
+    if brain is None:
+        try:
+            from claude_brain import ClaudeBrain
+            brain = ClaudeBrain()
+        except Exception as e:
+            logger.warning(f"[CUA-IA] Sem cerebro disponivel: {e}")
+            return False
+    prompt = (
+        f"Objetivo na tela do sistema juridico LegalOne: {objetivo}\n\n"
+        f"Elementos da tela (JSON): {json.dumps(itens, ensure_ascii=False)}\n\n"
+        "Responda APENAS com o numero do campo 'i' do elemento que deve ser clicado "
+        "para cumprir o objetivo. Se nenhum servir, responda -1."
+    )
+    try:
+        resposta = brain.ask(prompt)
+        idx = int("".join(c for c in resposta if c.isdigit() or c == "-")[:4])
+    except Exception as e:
+        logger.warning(f"[CUA-IA] Resposta invalida do cerebro: {e}")
+        return False
+    if idx < 0:
+        logger.warning(f"[CUA-IA] Cerebro nao encontrou elemento para: {objetivo}")
+        return False
+    alvo = next((x for x in itens if x["i"] == idx), None)
+    logger.info(f"[CUA-IA] Cerebro escolheu [{idx}] {alvo['label'][:60] if alvo else '?'} para '{objetivo}'")
+    return clicar_por_indice(idx)
