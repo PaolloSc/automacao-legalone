@@ -565,6 +565,64 @@ class LegalOneCadastro:
         logger.error("   âŒ NÃ£o foi possÃ­vel navegar para 'PrÃ©-cadastro'")
         return False
 
+    def _continuar_preenchimento_rascunho(self, cnj: str) -> bool:
+        """Abre o rascunho em Pre-cadastro pelo caminho correto: Editar > Continuar preenchimento.
+
+        'Alterar' NAO serve para item em Pre-cadastro - so 'Continuar preenchimento'
+        reabre o formulario de cadastro para completar e promover a pasta.
+        """
+        if not self._ir_para_pre_cadastro():
+            return False
+        time.sleep(3)
+
+        # localiza a linha do CNJ e abre o menu de acoes (Editar) daquela linha
+        try:
+            busca = self.page.query_selector('input[type="search"], #Search, input[name="Search"]')
+            if busca:
+                busca.fill(str(cnj))
+                self.page.keyboard.press('Enter')
+                time.sleep(6)
+        except Exception:
+            pass
+
+        for seletor in (
+            f'tr:has-text("{cnj}") a:has-text("Editar")',
+            f'tr:has-text("{cnj}") button:has-text("Editar")',
+            'a:has-text("Editar")',
+            'button:has-text("Editar")',
+            f'tr:has-text("{cnj}") [aria-label*="cao" i], tr:has-text("{cnj}") .dropdown-toggle',
+        ):
+            try:
+                el = self.page.wait_for_selector(seletor, state='visible', timeout=4000)
+                if el:
+                    el.click()
+                    logger.info(f"   OK 'Editar' clicado ({seletor[:40]})")
+                    time.sleep(2)
+                    break
+            except Exception:
+                continue
+
+        for seletor in (
+            'a:has-text("Continuar preenchimento")',
+            'button:has-text("Continuar preenchimento")',
+            '[role="menuitem"]:has-text("Continuar preenchimento")',
+            'a:has-text("Continuar")',
+        ):
+            try:
+                el = self.page.wait_for_selector(seletor, state='visible', timeout=5000)
+                if el:
+                    el.click()
+                    logger.info("   OK 'Continuar preenchimento' clicado")
+                    self._aguardar_carregamento(20000)
+                    time.sleep(3)
+                    self._switch_to_latest_page()
+                    return True
+            except Exception:
+                continue
+
+        logger.warning("   AVISO 'Continuar preenchimento' nao encontrado no Pre-cadastro")
+        return False
+
     def _clicar_continuar_cadastro_popup(self) -> bool:
         """Tenta clicar em 'Continuar cadastro' no pop-up que aparece apÃ³s 'Pular etapa'.
 
@@ -6644,6 +6702,15 @@ class LegalOneCadastro:
                     return False
                 if self._captura_em_rascunhos:
                     logger.info("âœ… Processo enviado para rascunhos no LegalOne.")
+                    # Rascunho so avanca por Editar > Continuar preenchimento
+                    if self._continuar_preenchimento_rascunho(dados_processo.get('cnj')):
+                        logger.info("ðŸ“ Rascunho reaberto - completando cadastro...")
+                        self.preencher_campos_obrigatorios(dados_processo)
+                        self.preencher_detalhes_faltantes(dados_processo)
+                        if self.clicar_salvar():
+                            if self.realizar_acoes_pos_cadastro(dados_processo):
+                                return self._confirmar_no_acervo(dados_processo)
+                            return False
                     logger.info("ðŸ”„ Processo jÃ¡ existente detectado; abrindo processo para alteraÃ§Ã£o e cadastro de pedidos...")
                     if self.realizar_acoes_pos_cadastro(dados_processo):
                         logger.info("âœ… Fluxo de alteraÃ§Ã£o do processo existente concluÃ­do.")
@@ -8263,6 +8330,23 @@ class LegalOneCadastro:
             # Populate stats ANTES de qualquer retorno
             if isinstance(dados_processo, dict):
                 dados_processo.setdefault('_pedidos_stats', {'preenchidos': preenchidos, 'total': total_itens})
+
+            # A origem trouxe pedidos mas nenhum entrou (ex.: parser nao reconheceu o
+            # formato)? Nao pode virar email de sucesso - o cadastro esta incompleto.
+            dp_ = dados_processo or {}
+            origem_pedidos = ' '.join(
+                str(v) for v in (
+                    self._extrair_texto_detalhes_pedidos(dp_),
+                    dp_.get('pedidos'),
+                    dp_.get('descricao_pedidos'),
+                ) if v
+            )
+            if preenchidos == 0 and self._valor_limpo(origem_pedidos):
+                logger.error("   [PEDIDOS] Origem tem pedidos mas NENHUM foi cadastrado - cadastro incompleto")
+                self.last_error_reason = (
+                    'Pedidos vieram nos dados mas nenhum foi cadastrado no LegalOne (cadastro incompleto)'
+                )
+                return False
             if total_itens > 0 and preenchidos == 0:
                 logger.error("   âŒ Nenhum pedido foi preenchido com sucesso. Abortando salvamento para nÃ£o sobrescrever estado prÃ©vio.")
                 self.last_error_reason = "Nenhum pedido foi cadastrado"
