@@ -938,6 +938,28 @@ class LegalOneCadastro:
             return None
         return str(valor).strip()
 
+    @staticmethod
+    def _sim_ou_nao(valor) -> str:
+        """Campo so aceita Sim/Nao: qualquer outra coisa (inclusive 'NAO LOCALIZADO') vira Nao."""
+        txt = unicodedata.normalize('NFD', str(valor or '')).lower()
+        txt = ''.join(c for c in txt if unicodedata.category(c) != 'Mn').strip()
+        return 'Sim' if txt in ('sim', 's', 'true', '1', 'yes') else 'Não'
+
+    @staticmethod
+    def _nome_parte(valor) -> str:
+        """Nome da parte como no Forms: sem anotacao de papel, so a parte principal.
+
+        'Katia Bela dos Santos Souza (Reclamante/Autora)' -> 'Katia Bela dos Santos Souza'
+        'Steel Ltda (Reclamado); Auristela; Rita'          -> 'Steel Ltda'
+        A extracao por IA anexa papel/lista de partes; o campo do LegalOne aceita um nome so.
+        """
+        txt = str(valor or '')
+        txt = txt.split(';')[0]
+        txt = re.sub(r'\([^)]*\)', ' ', txt)          # (Reclamante/Autora)
+        txt = re.sub(r'\s+[-–]\s+.*$', '', txt)       # " - Reclamado"
+        txt = re.sub(r'[,\s]+$', '', txt)
+        return re.sub(r'\s{2,}', ' ', txt).strip()
+
     def _resolver_tipo_pessoa(self, nome: str, documento: str | None, tipo_preferido: str | None) -> str:
         """Resolve PF/PJ com base no documento; sem documento, usa preferÃªncia/heurÃ­stica.
 
@@ -3400,7 +3422,10 @@ class LegalOneCadastro:
         ultimo_erro = None
         for _ in range(3):
             try:
-                self.page.fill(pwd_sel, self.password, timeout=10000)
+                if hasattr(self.page, 'fill'):
+                    self.page.fill(pwd_sel, self.password, timeout=10000)
+                else:  # paginas sem API de fill (ex.: dubles de teste)
+                    self.page.wait_for_selector(pwd_sel, timeout=10000).fill(self.password)
                 ultimo_erro = None
                 break
             except Exception as e:
@@ -4292,6 +4317,53 @@ class LegalOneCadastro:
             logger.debug(f"[campos_obrig] Erro ao escanear: {e}")
             return []
 
+    def _fallback_cua_combobox(self, seletor, valor, nome_campo, label_form) -> bool:
+        """Ultimo recurso p/ combobox que nao commita: Playwright digita p/ abrir o
+        dropdown e o cua-driver clica na opcao via arvore de acessibilidade (AT-SPI)."""
+        try:
+            import cua_fallback
+            if not cua_fallback.disponivel():
+                logger.warning(f"   [CUA] Indisponivel (binario ausente) - sem fallback para {nome_campo}")
+                return False
+        except Exception as e:
+            logger.warning(f"   [CUA] Import falhou ({e}) - sem fallback para {nome_campo}")
+            return False
+        logger.info(f"   [CUA] Fallback de acessibilidade para {nome_campo}...")
+        # 1) foca o campo: preferencia pela arvore AT-SPI (UI nova nao tem os
+        # seletores CSS antigos); seletor CSS fica como ultimo recurso
+        focado = cua_fallback.clicar_campo(label_form)
+        if not focado:
+            try:
+                campo = self.page.wait_for_selector(seletor, state='visible', timeout=4000)
+                campo.click()
+                focado = True
+            except Exception as e:
+                logger.warning(f"   [CUA] Nao focou {nome_campo}: {e}")
+                return False
+        time.sleep(1)
+        try:
+            self.page.keyboard.type(str(valor)[:40], delay=50)  # vai pro elemento focado
+        except Exception:
+            pass
+        time.sleep(3)  # dropdown abrir e popular
+        if not cua_fallback.clicar_opcao(str(valor)):
+            # nome fora da base: cria o contato pela opcao Adicionar do dropdown
+            logger.info(f"   [CUA] Sem match p/ '{str(valor)[:40]}' — tentando criar contato via Adicionar")
+            if not cua_fallback.clicar_opcao('Adicionar'):
+                return False
+            time.sleep(2)
+            try:
+                self._tratar_modal_criacao_obrigatoria(nome=str(valor))
+            except Exception as e:
+                logger.warning(f"   [CUA] Modal de criacao: {e}")
+        time.sleep(1.5)
+        atual = self._valor_limpo(self._ler_valor_campo_formulario(label_form)) or ''
+        if atual:
+            logger.info(f"   [CUA] {nome_campo} commitou: '{atual}'")
+            return True
+        logger.warning(f"   [CUA] {nome_campo} continua vazio apos clique")
+        return False
+
     def _ler_valor_campo_formulario(self, label_texto: str) -> str | None:
         """LÃª o valor atual de um campo no formulÃ¡rio pelo texto do label.
 
@@ -4740,7 +4812,7 @@ class LegalOneCadastro:
                 dados.get('cliente')
                 or self._obter_outro_dado(dados, 'Cliente principal', 'Cliente')
             )
-            cliente = self._valor_limpo(cliente)
+            cliente = self._nome_parte(self._valor_limpo(cliente) or '') or None
             if cliente:
                 cliente_seletor = (
                     self._encontrar_input_por_label_exato('Cliente principal')
@@ -4766,9 +4838,12 @@ class LegalOneCadastro:
                     )
                     self._tratar_modal_criacao_obrigatoria(nome=cliente, documento=doc_cliente)
                     atual = self._valor_limpo(self._ler_valor_campo_formulario('Cliente principal')) or ''
-                    if atual and self._calcular_similaridade(cliente, atual) < 0.45:
+                if (not atual) or self._calcular_similaridade(cliente, atual) < 0.45:
+                    self._fallback_cua_combobox(cliente_seletor, cliente, 'Cliente Principal', 'Cliente principal')
+                    atual = self._valor_limpo(self._ler_valor_campo_formulario('Cliente principal')) or ''
+                    if (not atual) or self._calcular_similaridade(cliente, atual) < 0.45:
                         dados.setdefault('_qa_warnings', []).append(
-                            f"Cliente principal pode estar ERRADO: formulario='{atual}', esperado='{cliente}'"
+                            f"Cliente principal pode estar ERRADO: formulario='{atual or 'VAZIO'}', esperado='{cliente}'"
                         )
 
             # 2. PosiÃ§Ã£o * (Autor/RÃ©u/Reclamado/Reclamante)
@@ -4813,6 +4888,12 @@ class LegalOneCadastro:
                         'PosiÃ§Ã£o',
                         permitir_adicionar=False,
                     )
+                if not self._valor_limpo(self._ler_valor_campo_formulario('Posição')):
+                    self._fallback_cua_combobox(posicao_seletor, posicao, 'Posição', 'Posição')
+                    if not self._valor_limpo(self._ler_valor_campo_formulario('Posição')):
+                        dados.setdefault('_qa_warnings', []).append(
+                            f"Posição pode ter ficado VAZIA (esperado '{posicao}')"
+                        )
 
             # 3. ContrÃ¡rio Principal *
             contrario = (
@@ -4827,7 +4908,7 @@ class LegalOneCadastro:
                     'Contrario',
                 )
             )
-            contrario = self._valor_limpo(contrario)
+            contrario = self._nome_parte(self._valor_limpo(contrario) or '') or None
             if contrario:
                 # Busca o input pelo label exato para evitar preencher campo errado
                 contrario_seletor = self._encontrar_input_por_label_exato('ContrÃ¡rio principal')
@@ -4841,6 +4922,17 @@ class LegalOneCadastro:
                 )
                 # Idem: verifica modal obrigatÃ³rio apÃ³s preencher o contrÃ¡rio
                 self._tratar_modal_criacao_obrigatoria(nome=contrario, documento=doc_contrario)
+
+                if not self._valor_limpo(self._ler_valor_campo_formulario('Contrário Principal')):
+                    # compostos ("A; B; C") entram só com o principal no fallback
+                    principal = str(contrario).split(';')[0].strip()
+                    self._fallback_cua_combobox(
+                        contrario_seletor, principal, 'Contrário Principal', 'Contrário Principal'
+                    )
+                    if not self._valor_limpo(self._ler_valor_campo_formulario('Contrário Principal')):
+                        dados.setdefault('_qa_warnings', []).append(
+                            f"Contrário Principal pode ter ficado VAZIO (esperado '{principal}')"
+                        )
 
             # 4. ResponsÃ¡vel principal * (default: Paollo Sanchez)
             # A chave 'advogado' do Forms mapeia para o ResponsÃ¡vel principal no LegalOne.
@@ -5079,9 +5171,7 @@ class LegalOneCadastro:
 
             # 8. Datacloud configurado? *
             datacloud = dados.get('datacloud_configurado') or dados.get('outros_dados', {}).get('Datacloud configurado')
-            datacloud = self._valor_limpo(datacloud)
-            if not datacloud:
-                datacloud = 'NÃ£o'  # Default
+            datacloud = self._sim_ou_nao(self._valor_limpo(datacloud))
             try:
                 # UUID do input Ã© dinÃ¢mico - resolve pelo label
                 seletor_dc = self._resolver_seletor_por_label('Datacloud configurado')
@@ -6547,7 +6637,7 @@ class LegalOneCadastro:
                     logger.info("ðŸ”„ Processo jÃ¡ cadastrado no LegalOne â€” abrindo para alteraÃ§Ã£o e cadastro de pedidos...")
                     if self.realizar_acoes_pos_cadastro(dados_processo):
                         logger.info("âœ… Pedidos preenchidos no processo existente.")
-                        return True
+                        return self._confirmar_no_acervo(dados_processo)
                     logger.error("âŒ Falha ao abrir/alterar processo existente para pedidos.")
                     if not self.last_error_reason:
                         self.last_error_reason = 'Processo jÃ¡ cadastrado no LegalOne'
@@ -6557,7 +6647,7 @@ class LegalOneCadastro:
                     logger.info("ðŸ”„ Processo jÃ¡ existente detectado; abrindo processo para alteraÃ§Ã£o e cadastro de pedidos...")
                     if self.realizar_acoes_pos_cadastro(dados_processo):
                         logger.info("âœ… Fluxo de alteraÃ§Ã£o do processo existente concluÃ­do.")
-                        return True
+                        return self._confirmar_no_acervo(dados_processo)
                     logger.error("âŒ Falha ao abrir/alterar processo existente apÃ³s envio para rascunhos.")
                     return False
                 logger.warning("âš  NÃ£o foi possÃ­vel executar o fluxo 'Pular etapa' -> 'PrÃ©-cadastro'")
@@ -6581,7 +6671,7 @@ class LegalOneCadastro:
                 logger.info("ðŸ”„ Processo jÃ¡ cadastrado (detectado na URL) â€” abrindo para alteraÃ§Ã£o e pedidos...")
                 if self.realizar_acoes_pos_cadastro(dados_processo):
                     logger.info("âœ… Pedidos preenchidos no processo existente.")
-                    return True
+                    return self._confirmar_no_acervo(dados_processo)
                 logger.error("âŒ Falha ao abrir/alterar processo existente para pedidos.")
                 if not self.last_error_reason:
                     self.last_error_reason = 'Processo jÃ¡ cadastrado no LegalOne'
@@ -6635,7 +6725,7 @@ class LegalOneCadastro:
             logger.info("\nâœ… Fluxo de cadastro finalizado!")
             logger.info("ðŸ–¥ï¸  Navegador mantido aberto para conferÃªncia.")
 
-            return True
+            return self._confirmar_no_acervo(dados_processo)
 
         except Exception as e:
             logger.error(f"âŒ Erro no fluxo: {e}")
@@ -6833,6 +6923,57 @@ class LegalOneCadastro:
 
         logger.warning("   âš  Modal obrigatÃ³rio ainda visÃ­vel apÃ³s Salvar â€” continuando fluxo")
         return True  # NÃ£o bloqueia: tentamos tratar; o fluxo principal continua
+
+    def _confirmar_no_acervo(self, dados_processo) -> bool:
+        """Prova FINAL de sucesso: o CNJ aparece na pesquisa de processos (Pastas).
+
+        Rascunho em Pré-cadastro não aparece na pesquisa — isso impede o email de
+        sucesso falso quando o salvar só gravou o rascunho.
+        """
+        cnj = (dados_processo or {}).get('cnj') if isinstance(dados_processo, dict) else None
+        if not cnj or 'localizado' in str(cnj).lower():
+            return True  # sem CNJ pesquisável, mantém o resultado do fluxo
+        texto = ''
+        for tentativa in (1, 2):
+            try:
+                self.page.goto(
+                    'https://carvalhofurtadoadv.novajus.com.br/processos/processos/search',
+                    wait_until='domcontentloaded', timeout=60000,
+                )
+                time.sleep(6)
+                campo = self.page.wait_for_selector(
+                    '#Search, input[name="Search"], input[placeholder*="Pesquisar em processos"]',
+                    timeout=30000,
+                )
+                campo.fill(str(cnj))
+                self.page.keyboard.press('Enter')
+                time.sleep(10)
+                texto = self.page.evaluate('() => document.body.innerText') or ''
+                break
+            except Exception as e:
+                logger.warning(f"   [ACERVO] Tentativa {tentativa} falhou: {str(e)[:120]}")
+                time.sleep(5)
+        try:
+            if not texto:
+                raise RuntimeError('nao foi possivel ler a pesquisa')
+            if str(cnj) in texto and 'encontrados: 0' not in texto.lower():
+                logger.info(f"   [ACERVO] Processo {cnj} confirmado na pesquisa de Pastas")
+                m = re.search(r'Proc\s*-\s*\d+', texto)
+                if m and isinstance(dados_processo, dict):
+                    dados_processo['numero_pasta'] = m.group(0)
+                return True
+            self.last_error_reason = (
+                f'Processo {cnj} NAO aparece na pesquisa de Pastas - provavelmente continua em Pre-cadastro (rascunho)'
+            )
+            logger.error(f"   [ACERVO] {self.last_error_reason}")
+            return False
+        except Exception as e:
+            logger.warning(f"   [ACERVO] Verificacao INCONCLUSIVA ({str(e)[:120]})")
+            if isinstance(dados_processo, dict):
+                dados_processo.setdefault('_qa_warnings', []).append(
+                    f"NAO foi possivel confirmar na pesquisa se o processo {cnj} saiu do rascunho - conferir no LegalOne"
+                )
+            return True
 
     def _confirmar_salvamento(self, timeout_s: int = 30) -> bool:
         """Confirma que o LegalOne ACEITOU o salvar (sai da tela de edicao, sem 'Campo obrigatorio').
@@ -8088,6 +8229,25 @@ class LegalOneCadastro:
                 time.sleep(2)
 
             # 4. SeÃ§Ã£o de pedidos + preenchimento completo pelo Forms
+            # Rascunho aberto p/ alteração costuma ter obrigatórios vazios (cadastro
+            # anterior rejeitado) — completa antes dos pedidos, senão o Salvar e fechar
+            # é rejeitado e o processo nunca sai do Pré-cadastro
+            try:
+                vazios = []
+                try:
+                    vazios = self._detectar_campos_obrigatorios_vazios()
+                except Exception:
+                    pass
+                # detector não enxerga os combobox da UI nova — rascunho completa SEMPRE
+                veio_de_rascunho = bool(getattr(self, '_captura_em_rascunhos', False))
+                if dados_processo and (vazios or veio_de_rascunho):
+                    logger.warning(
+                        f"   [ALTERAR] Completando obrigatórios (vazios detectados: {len(vazios)}; rascunho: {veio_de_rascunho})"
+                    )
+                    self.preencher_campos_obrigatorios(dados_processo)
+            except Exception as e:
+                logger.warning(f"   [ALTERAR] Falha ao completar obrigatórios: {e}")
+
             if not self._abrir_secao_pedidos():
                 logger.warning("   âš  NÃ£o foi possÃ­vel abrir seÃ§Ã£o de pedidos")
             else:
@@ -8161,6 +8321,8 @@ class LegalOneCadastro:
                     self.page.wait_for_load_state('domcontentloaded', timeout=15000)
                 except Exception:
                     pass
+                if not self._confirmar_salvamento(timeout_s=20):
+                    return False
 
             # 6. Resolver monitoramento pendente (best-effort, nunca propaga erro)
             try:

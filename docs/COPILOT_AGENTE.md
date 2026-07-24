@@ -99,8 +99,24 @@ pedidos, descricao_pedidos, posicao
 + data_arquivamento, honorarios_favor_escritorio,
   valor_honorarios_favor_escritorio
 
+## Regras de Preenchimento (o LegalOne rejeita fora disso)
+- `cliente` e `contrario`: SOMENTE O NOME, exatamente como no Forms.
+  Nunca inclua o papel entre parenteses nem lista de partes.
+  ERRADO: "Katia Bela dos Santos Souza (Reclamante/Autora)"
+  CERTO:  "Katia Bela dos Santos Souza"
+- `contrario` aceita UM UNICO nome (o contrario principal). As demais
+  partes contrarias vao em `outros_envolvidos`, uma por linha.
+  ERRADO: "Steel Servicos Auxiliares LTDA (Reclamado); Auristela; Rita"
+  CERTO:  contrario = "Steel Servicos Auxiliares LTDA"
+          outros_envolvidos = "Auristela de Alencar Dutra\nRita de Cassia Muniz"
+- O papel da parte vai em `posicao` (Reclamante/Reclamado), nunca no nome.
+- Campos Sim/Nao (`datacloud_configurado`, `incluir_relatorio`,
+  `contrato_honorarios`): responda literalmente "Sim" ou "Nao".
+  Nao use "NAO LOCALIZADO" nesses campos — na duvida, "Nao".
+
 ## Formato de Saída
-Liste campos extraídos com valores. Se não encontrou, "NAO LOCALIZADO".
+Liste campos extraídos com valores. Se não encontrou, "NAO LOCALIZADO"
+(exceto nos campos Sim/Nao acima).
 Pergunte: "Os dados estão corretos? Deseja alterar algum campo?"
 
 ## Envio (OBRIGATÓRIO)
