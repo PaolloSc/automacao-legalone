@@ -6,6 +6,9 @@ VersÃ£o Otimizada: MantÃ©m navegador e sessÃ£o ativos
 import time
 import os
 import re
+import json
+import base64
+import requests
 import difflib
 import subprocess
 import sys
@@ -579,110 +582,311 @@ class LegalOneCadastro:
         logger.error("   âŒ NÃ£o foi possÃ­vel navegar para 'PrÃ©-cadastro'")
         return False
 
-    _JS_ACAO_CARD = """
-        (args) => {
-          const {cnj, acao} = args;
-          const alvo = String(cnj).replace(/\D/g, '');
-          const norm = s => String(s || '').replace(/\D/g, '');
-          const cards = [...document.querySelectorAll('div,li,article,section')].filter(n => {
-            const txt = n.innerText || '';
-            return norm(txt).includes(alvo) && n.querySelector('button[title]');
+    _JS_MARCAR = """
+        (maxItens) => {
+          document.querySelectorAll('.__ai_badge').forEach(b => b.remove());
+          const sx = window.scrollX, sy = window.scrollY;
+          // marca todo elemento renderizado (inclusive abaixo da dobra) -> screenshot full_page ve tudo
+          const vis = e => { const r = e.getBoundingClientRect();
+            return r.width > 4 && r.height > 6 && e.offsetParent !== null; };
+          const sel = 'button, a, [role="button"], [role="menuitem"], input[type="submit"], [role="option"], input:not([type="hidden"]), textarea, select, [role="combobox"], [contenteditable="true"]';
+          const els = [...document.querySelectorAll(sel)].filter(vis).slice(0, maxItens);
+          const out = [];
+          els.forEach((e, i) => {
+            e.setAttribute('data-ai-idx', String(i));
+            const r = e.getBoundingClientRect();
+            const b = document.createElement('div');
+            b.className = '__ai_badge';
+            b.textContent = String(i);
+            b.style.cssText = 'position:absolute;z-index:2147483647;left:' + (r.left + sx)
+              + 'px;top:' + (r.top + sy) + 'px;background:#e11;color:#fff;'
+              + 'font:bold 11px monospace;padding:0 3px;border-radius:3px;pointer-events:none;';
+            document.body.appendChild(b);
+            out.push({ i, txt: (e.innerText || e.value || '').replace(/\s+/g, ' ').trim().slice(0, 45),
+                       cx: r.left + r.width / 2, cy: r.top + r.height / 2 });
           });
-          if (!cards.length) return 'sem_card';
-          // menor elemento que ainda contem o CNJ e os botoes = o card da linha
-          cards.sort((a, b) => (a.innerText || '').length - (b.innerText || '').length);
-          const card = cards[0];
-          const btn = [...card.querySelectorAll('button[title], button')].find(b =>
-            ((b.getAttribute('title') || '') + ' ' + (b.innerText || '')).toLowerCase().includes(acao)
-          );
-          if (!btn) return 'sem_botao';
-          btn.click();
-          return 'ok';
+          return out;
         }
     """
 
-    def _acao_no_card_rascunho(self, cnj: str, acao: str) -> bool:
-        """Clica em Editar/Excluir/Importar no card do CNJ, procurando em todos os status.
+    def _gemini_vision(self, prompt, png_bytes):
+        """Manda screenshot + prompt para o Gemini (visao) e devolve o texto."""
+        key = os.getenv('GOOGLE_API_KEY') or os.getenv('GEMINI_API_KEY')
+        if not key:
+            return None
+        model = os.getenv('LEGALONE_VISION_MODEL', 'gemini-2.5-flash')
+        url = ("https://generativelanguage.googleapis.com/v1beta/models/"
+               + model + ":generateContent?key=" + key)
+        body = {"contents": [{"parts": [
+            {"text": prompt},
+            {"inline_data": {"mime_type": "image/png",
+                             "data": base64.b64encode(png_bytes).decode()}},
+        ]}]}
+        try:
+            r = requests.post(url, json=body, timeout=60)
+        except Exception as e:
+            logger.warning("   [VISAO] Gemini erro de rede: " + str(e)[:80])
+            return None
+        if r.status_code != 200:
+            logger.warning("   [VISAO] Gemini " + str(r.status_code) + ": " + r.text[:120])
+            return self._openai_vision(prompt, png_bytes)  # reserva quando Gemini estoura cota
+        try:
+            return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+        except Exception:
+            return self._openai_vision(prompt, png_bytes)
 
-        A lista de Pre-cadastro e feita de cards filtrados por Sucesso/Processando/Erro;
-        o rascunho pode estar em qualquer um deles.
-        """
+    def _openai_vision(self, prompt, png_bytes):
+        """Reserva de visao: GPT-4o quando o Gemini falha/estoura cota."""
+        key = os.getenv('OPENAI_API_KEY')
+        if not key:
+            return None
+        b64 = base64.b64encode(png_bytes).decode()
+        body = {
+            "model": os.getenv('LEGALONE_VISION_MODEL_OPENAI', 'gpt-4o'),
+            "max_tokens": 300,
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64," + b64}},
+            ]}],
+        }
+        try:
+            r = requests.post("https://api.openai.com/v1/chat/completions",
+                              headers={"Authorization": "Bearer " + key}, json=body, timeout=60)
+        except Exception as e:
+            logger.warning("   [VISAO] OpenAI erro de rede: " + str(e)[:80])
+            return None
+        if r.status_code != 200:
+            logger.warning("   [VISAO] OpenAI " + str(r.status_code) + ": " + r.text[:120])
+            return None
+        try:
+            logger.info("   [VISAO] usando reserva GPT-4o")
+            return r.json()["choices"][0]["message"]["content"]
+        except Exception:
+            return None
+
+    def _agente_visual(self, objetivo, max_passos=5):
+        """Agente de VISAO estilo Claude-in-Chrome: marca clicaveis com numeros,
+        tira screenshot, Gemini decide qual numero clicar, e clica. Repete ate concluir."""
+        if not (os.getenv('GOOGLE_API_KEY') or os.getenv('GEMINI_API_KEY')):
+            logger.warning("   [VISAO] Sem GOOGLE_API_KEY - agente visual indisponivel")
+            return False
+        for passo in range(max_passos):
+            try:
+                els = self.page.evaluate(self._JS_MARCAR, 60)
+                png = self.page.screenshot(type='png', full_page=True)
+            except Exception as e:
+                logger.warning("   [VISAO] Falha ao observar: " + str(e)[:80])
+                return False
+            if not els:
+                return False
+            legenda = "\n".join('[' + str(e["i"]) + '] ' + e["txt"] for e in els)
+            prompt = (
+                "Voce opera a tela do sistema juridico LegalOne clicando. Na imagem, cada "
+                "elemento clicavel tem um numero vermelho no canto superior esquerdo.\n"
+                "NUNCA clique na barra de navegacao do topo (Home, Contatos, Agenda, Publicacoes, "
+                "Processos, Servicos, GED, Conteudo juridico, Time sheet, Legal Analytics, Opcoes) "
+                "nem em Pesquisar - eles saem do fluxo. Foque no card e no menu do processo.\n"
+                "OBJETIVO: " + objetivo + "\n\nLegenda (numero -> texto):\n" + legenda + "\n\n"
+                "Escolha o proximo clique. Responda SOMENTE com JSON: "
+                '{"i": N} para clicar no numero N; '
+                '{"fim": true} se o objetivo JA foi cumprido (ex.: formulario de cadastro abriu); '
+                '{"i": -1} se nenhum serve.'
+            )
+            resp = self._gemini_vision(prompt, png)
+            try:
+                self.page.evaluate("document.querySelectorAll('.__ai_badge').forEach(b => b.remove())")
+            except Exception:
+                pass
+            if not resp:
+                return False
+            try:
+                m = re.search(r'\{[^{}]*\}', resp)
+                d = json.loads(m.group(0)) if m else {}
+            except Exception:
+                logger.warning("   [VISAO] resposta invalida: " + resp[:80])
+                return False
+            if d.get('fim'):
+                logger.info("   [VISAO] Gemini sinalizou FIM no passo " + str(passo + 1))
+                return True
+            idx = d.get('i', -1)
+            if idx is None or idx < 0:
+                logger.info("   [VISAO] Gemini nao achou elemento (passo " + str(passo + 1) + ")")
+                return False
+            alvo = next((e for e in els if e['i'] == idx), None)
+            logger.info("   [VISAO] passo " + str(passo + 1) + ": clicar [" + str(idx) + "] '"
+                        + (alvo['txt'] if alvo else '?') + "'")
+            try:
+                self.page.click('[data-ai-idx="' + str(idx) + '"]', timeout=6000)
+            except Exception:
+                if alvo:
+                    try:
+                        self.page.mouse.click(alvo['cx'], alvo['cy'])
+                    except Exception as e:
+                        logger.warning("   [VISAO] clique falhou: " + str(e)[:60])
+            time.sleep(5)
+        logger.info("   [VISAO] max de passos atingido")
+        return True
+
+    def _preencher_campo_visual(self, label, valor, criar=False):
+        """Preenche um campo via VISAO: Gemini localiza o campo pelo rotulo, digita o valor,
+        e escolhe a opcao do dropdown (ou clica 'Adicionar' para criar contato novo)."""
+        if not (os.getenv('GOOGLE_API_KEY') or os.getenv('GEMINI_API_KEY')) or not valor:
+            return False
+
+        def _idx(txt):
+            try:
+                m = re.search(r'\{[^{}]*\}', txt or '')
+                return json.loads(m.group(0)) if m else {}
+            except Exception:
+                return {}
+
+        # 1) localizar o campo pelo rotulo
+        try:
+            els = self.page.evaluate(self._JS_MARCAR, 90)
+            png = self.page.screenshot(type='png', full_page=True)
+        except Exception as e:
+            logger.warning("   [VISAO-FILL] observar falhou: " + str(e)[:70])
+            return False
+        try:
+            self.page.evaluate("document.querySelectorAll('.__ai_badge').forEach(b => b.remove())")
+        except Exception:
+            pass
+        if not els:
+            return False
+        legenda = "\n".join('[' + str(e["i"]) + '] ' + e["txt"] for e in els)
+        p1 = ("Na imagem, cada campo tem um numero vermelho no canto. Qual numero e o CAMPO DE "
+              "ENTRADA (input/combobox) rotulado '" + label + "'? Responda SO JSON {\"i\": N} "
+              "ou {\"i\": -1} se nao existir.\n\nLegenda:\n" + legenda)
+        try:
+            with open('debug_visaofill_' + re.sub(r'\W+','_', label)[:20] + '.png', 'wb') as _f:
+                _f.write(png)
+        except Exception:
+            pass
+        d = _idx(self._gemini_vision(p1, png))
+        idx = d.get('i', -1)
+        if idx is None or idx < 0:
+            logger.info("   [VISAO-FILL] campo '" + label + "' nao localizado")
+            return False
+        alvo = next((e for e in els if e['i'] == idx), None)
+
+        # 2) clicar, limpar, digitar
+        try:
+            self.page.click('[data-ai-idx="' + str(idx) + '"]', timeout=6000)
+        except Exception:
+            if alvo:
+                try:
+                    self.page.mouse.click(alvo['cx'], alvo['cy'])
+                except Exception:
+                    return False
+        try:
+            self.page.keyboard.press('Control+A')
+            self.page.keyboard.press('Delete')
+            self.page.keyboard.type(str(valor)[:60], delay=45)
+        except Exception:
+            pass
+        time.sleep(3)
+
+        # 3) escolher a opcao do dropdown (ou criar contato)
+        try:
+            els2 = self.page.evaluate(self._JS_MARCAR, 90)
+            png2 = self.page.screenshot(type='png', full_page=True)
+        except Exception:
+            return True
+        try:
+            self.page.evaluate("document.querySelectorAll('.__ai_badge').forEach(b => b.remove())")
+        except Exception:
+            pass
+        leg2 = "\n".join('[' + str(e["i"]) + '] ' + e["txt"] for e in els2)
+        extra = (" Se NENHUMA opcao casar com o nome e houver um botao 'Adicionar' ou 'Criar' para "
+                 "cadastrar um contato novo, clique nele." if criar else "")
+        p2 = ("O campo '" + label + "' foi preenchido com '" + str(valor) + "' e deve ter aberto um "
+              "dropdown de opcoes. Clique na opcao que casa EXATAMENTE com '" + str(valor) + "'." + extra
+              + " Responda SO JSON: {\"i\": N} para clicar; {\"fim\": true} se ja esta selecionado "
+              "corretamente; {\"i\": -1} se nao ha o que fazer.\n\nLegenda:\n" + leg2)
+        d2 = _idx(self._gemini_vision(p2, png2))
+        if d2.get('fim'):
+            return True
+        i2 = d2.get('i', -1)
+        if i2 is not None and i2 >= 0:
+            alvo2 = next((e for e in els2 if e['i'] == i2), None)
+            logger.info("   [VISAO-FILL] '" + label + "' -> opcao [" + str(i2) + "] '"
+                        + (alvo2['txt'] if alvo2 else '?') + "'")
+            try:
+                self.page.click('[data-ai-idx="' + str(i2) + '"]', timeout=6000)
+                time.sleep(2)
+            except Exception:
+                if alvo2:
+                    try:
+                        self.page.mouse.click(alvo2['cx'], alvo2['cy'])
+                    except Exception:
+                        pass
+            # se abriu modal de criacao de contato, preenche pelo fluxo existente
+            try:
+                if criar and self._alerta_contato_exige_adicao_manual is not None:
+                    pass
+            except Exception:
+                pass
+        return True
+
+    def _continuar_preenchimento_rascunho(self, cnj: str) -> bool:
+        """Reabre o rascunho para continuar: agente de VISAO clica Editar > Continuar preenchimento.
+        Pre-cadastro abre no filtro 'Sucesso' (onde o processo fica), entao nao precisa alternar filtros."""
         if not self._ir_para_pre_cadastro():
             return False
         time.sleep(6)
-        filtros = ['Sucesso', 'Processando', 'Erro']
-        for filtro in [None] + filtros:
-            if filtro:
-                try:
-                    self.page.click(f'button:has-text("{filtro}")', timeout=5000)
-                    time.sleep(6)
-                except Exception:
-                    continue
-            try:
-                r = self.page.evaluate(self._JS_ACAO_CARD, {"cnj": str(cnj), "acao": acao})
-            except Exception as e:
-                logger.warning(f"   [RASCUNHO] Falha ao procurar card: {str(e)[:100]}")
-                continue
-            if r == 'ok':
-                logger.info(f"   [RASCUNHO] '{acao}' clicado no card de {cnj} (status: {filtro or 'padrao'})")
-                time.sleep(4)
-                return True
-            logger.info(f"   [RASCUNHO] status '{filtro or 'padrao'}': {r}")
-        return False
 
-    def _continuar_preenchimento_rascunho(self, cnj: str) -> bool:
-        """Reabre o rascunho: Editar no card > 'Continuar preenchimento'."""
-        if not self._acao_no_card_rascunho(cnj, 'editar'):
-            return False
-        for seletor in (
-            'a:has-text("Continuar preenchimento")',
-            'button:has-text("Continuar preenchimento")',
-            '[role="menuitem"]:has-text("Continuar preenchimento")',
-        ):
-            try:
-                el = self.page.wait_for_selector(seletor, state='visible', timeout=6000)
-                if el:
-                    el.click()
-                    logger.info("   [RASCUNHO] 'Continuar preenchimento' clicado")
-                    time.sleep(8)
-                    self._switch_to_latest_page()
+        # 1a opcao: cua-driver (UIA) clica Editar do CNJ e 'Continuar com o preenchimento'
+        # deterministico, sem LLM, sem cota de visao
+        try:
+            import cua_win
+            if cua_win.disponivel() and cua_win.clicar_editar_do_cnj(cnj):
+                time.sleep(3)
+                cua_win.clicar_label('continuar com o preenchimento') or cua_win.clicar_label('continuar')
+                time.sleep(5)
+                self._switch_to_latest_page()
+                if 'draft-litigation/main' not in (self.page.url or ''):
+                    logger.info(f"   [RASCUNHO] Formulario reaberto via cua: {self.page.url[:80]}")
                     return True
+        except Exception as e:
+            logger.warning(f"   [CUA] navegacao rascunho falhou: {str(e)[:80]}")
+
+        # reserva: visao Gemini (se tiver cota). Nao gate no retorno: a fonte da verdade
+        # e ter saido da lista de Pre-cadastro (o form abre na aba Processos/Pasta)
+        objetivo = (
+            f"Na lista de Pre-cadastro, reabrir para continuar o cadastro o processo de numero {cnj}. "
+            "No card desse processo, clicar no botao 'Editar' (titulo 'Editar processo') e no menu "
+            "clicar 'Continuar com o preenchimento'."
+        )
+        self._agente_visual(objetivo, max_passos=6)
+        time.sleep(3)
+        self._switch_to_latest_page()
+        if 'draft-litigation/main' not in (self.page.url or ''):
+            logger.info(f"   [RASCUNHO] Formulario reaberto: {self.page.url[:80]}")
+            return True
+        # fallback: clicar o botao direto (texto varia: 'Continuar com o preenchimento')
+        for seletor in ('a:has-text("Continuar")', 'button:has-text("Continuar")'):
+            try:
+                el = self.page.wait_for_selector(seletor, state='visible', timeout=4000)
+                if el:
+                    el.click(); time.sleep(6); self._switch_to_latest_page()
+                    return 'draft-litigation/main' not in (self.page.url or '')
             except Exception:
                 continue
-        # 'Editar' pode ja abrir o formulario direto
-        try:
-            url = (self.page.url or '')
-            if 'draft-litigation/main' not in url:
-                logger.info(f"   [RASCUNHO] 'Editar' abriu o formulario direto: {url[:80]}")
-                self._switch_to_latest_page()
-                return True
-        except Exception:
-            pass
-        logger.warning("   [RASCUNHO] 'Continuar preenchimento' nao apareceu apos Editar")
-        return False
+        return 'draft-litigation/main' not in (self.page.url or '')
 
     def _excluir_rascunho(self, cnj: str) -> bool:
-        """Exclui o rascunho no Pre-cadastro (AÇÃO DESTRUTIVA, opt-in por env)."""
+        """Exclui o rascunho (AÇÃO DESTRUTIVA, opt-in). Agente de VISAO clica Excluir e confirma."""
         if os.getenv('LEGALONE_EXCLUIR_RASCUNHO', '').strip().lower() not in ('1', 'true', 'sim'):
             logger.info("   [RASCUNHO] Exclusao desativada (LEGALONE_EXCLUIR_RASCUNHO)")
             return False
-        if not self._acao_no_card_rascunho(cnj, 'excluir'):
+        if not self._ir_para_pre_cadastro():
             return False
-        for seletor in (
-            'button:has-text("Confirmar")', 'button:has-text("Sim")',
-            'button.btn-danger:has-text("Excluir")', 'button:has-text("Excluir")',
-        ):
-            try:
-                el = self.page.wait_for_selector(seletor, state='visible', timeout=5000)
-                if el:
-                    el.click()
-                    logger.info(f"   [RASCUNHO] Rascunho de {cnj} excluido")
-                    time.sleep(5)
-                    return True
-            except Exception:
-                continue
-        logger.info(f"   [RASCUNHO] Exclusao de {cnj} sem modal de confirmacao (assumindo concluida)")
-        return True
+        time.sleep(6)
+        objetivo = (
+            f"Na lista de Pre-cadastro, excluir o processo de numero {cnj}: clicar no botao 'Excluir' "
+            "(titulo 'Excluir processo') do card desse processo e confirmar na caixa de dialogo."
+        )
+        return self._agente_visual(objetivo, max_passos=6)
 
     def _clicar_continuar_cadastro_popup(self) -> bool:
         """Tenta clicar em 'Continuar cadastro' no pop-up que aparece apÃ³s 'Pular etapa'.
@@ -903,7 +1107,7 @@ class LegalOneCadastro:
                 (labelText) => {
                     const labels = Array.from(document.querySelectorAll('label'));
                     // Busca label cujo texto "limpo" corresponde exatamente
-                    const normalizar = (t) => (t || '').replace(/[\\s*:]+/g, ' ').trim().toLowerCase();
+                    const normalizar = (t) => (t || '').normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').replace(/[\\s*:]+/g, ' ').trim().toLowerCase();
                     const alvo = normalizar(labelText);
 
                     // Prioridade 1: match exato
@@ -2414,6 +2618,33 @@ class LegalOneCadastro:
                 continue
         return False
 
+    def _corrigir_captura_orgao(self, seletor, nome, doc, label) -> bool:
+        """Se o LegalOne acusa 'contato capturado no orgao / adicionar manualmente',
+        cria o contato de verdade (o placeholder do tribunal nao pode ficar).
+        Retorna True se, ao final, nao ha mais o alerta."""
+        if not self._alerta_contato_exige_adicao_manual():
+            return True
+        logger.warning(f"   [CONTATO] '{label}' foi capturado do orgao - criando contato manualmente")
+        campo_el = None
+        try:
+            sel1 = str(seletor).split(',')[0].strip() if seletor else ''
+            if sel1:
+                campo_el = self.page.query_selector(sel1)
+            if campo_el:
+                campo_el.click(); time.sleep(0.3)
+                campo_el.fill(''); time.sleep(0.3)
+                campo_el.type(str(nome)[:60], delay=30); time.sleep(2)
+        except Exception as e:
+            logger.warning(f"   [CONTATO] falha ao reabrir dropdown de '{label}': {str(e)[:80]}")
+        try:
+            self._adicionar_contato_novo(nome=nome, cnpj=doc, campo=campo_el)
+        except Exception as e:
+            logger.warning(f"   [CONTATO] _adicionar_contato_novo falhou: {str(e)[:80]}")
+        time.sleep(2)
+        resolvido = not self._alerta_contato_exige_adicao_manual()
+        logger.info(f"   [CONTATO] '{label}' criado manualmente: {'OK' if resolvido else 'ainda com alerta'}")
+        return resolvido
+
     def _adicionar_contato_novo(self, nome: str, cnpj: str | None = None,
                                  tipo_pessoa: str | None = None,
                                  dados_extra: dict | None = None,
@@ -2598,6 +2829,8 @@ class LegalOneCadastro:
                 logger.debug("      (modal_ativo nÃ£o encontrado â€” usando seletores globais)")
 
             # 3. Selecionar tipo de pessoa (se controle visÃ­vel)
+            # resolve o tipo (documento > preferencia > heuristica de nome); nunca None
+            tipo_pessoa = self._resolver_tipo_pessoa(nome, cnpj, tipo_pessoa)
             eh_pf = ('fÃ­sica' in tipo_pessoa.lower()) or ('fisica' in tipo_pessoa.lower())
             # TambÃ©m detecta pelo documento: CPF = 11 dÃ­gitos
             digitos_doc = re.sub(r'\D', '', self._valor_limpo(cnpj) or '')
@@ -2866,15 +3099,15 @@ class LegalOneCadastro:
 
                 # ApÃ³s marcar, preenche campo "Motivo *" que aparece dinamicamente
                 if marcado:
-                    # JS puro: preenche qualquer input de texto vazio no modal
-                    # que nÃ£o seja nome/cpf (sÃ£o os campos de justificativa/motivo)
+                    # JS puro: preenche o campo Motivo (justificativa) do modal.
+                    # Valor vem do Python em UTF-8 (evita mojibake); padrao = exemplo do usuario.
+                    motivo_sem_cpf = os.getenv('LEGALONE_MOTIVO_SEM_CPF', 'Recusou-se a fornecer documentação')
                     preencheu_justif = self.page.evaluate("""
-                        () => {
+                        (VALOR) => {
                             const modals = document.querySelectorAll('ngb-modal-window');
                             const modal = modals[modals.length - 1];
                             if (!modal) return false;
 
-                            const VALOR = 'NÃ£o fornecido';
                             const EXCLUIR_IDS = ['input-name', 'input-cpf-cnpj'];
 
                             // Tenta por formcontrolname ou placeholder conhecidos primeiro
@@ -2923,7 +3156,7 @@ class LegalOneCadastro:
                             }
                             return false;
                         }
-                    """)
+                    """, motivo_sem_cpf)
                     if preencheu_justif:
                         logger.info(f"      âœ“ Motivo preenchido via JS ({preencheu_justif})")
                         time.sleep(0.3)
@@ -3438,7 +3671,13 @@ class LegalOneCadastro:
 
             self.temp_user_data_dir = tempfile.mkdtemp(prefix="legalone_pw_")
 
-            tentativas = [
+            _headed = os.getenv("LEGALONE_HEADED", "").strip().lower() in ("1", "true", "sim")
+            _topo = [
+                # perfil principal (logado) com Chrome real e visivel; so funciona sem
+                # outro chrome.exe segurando o perfil -> matar antes de rodar
+                ("VISIVEL chrome (perfil principal)", self.user_data_dir, False, "chrome"),
+            ] if _headed else []
+            tentativas = _topo + [
                 ("perfil principal visual", self.user_data_dir, False, "chrome"),
                 ("perfil principal headless", self.user_data_dir, True, "chrome"),
                 ("perfil alternativo visual", self.fallback_user_data_dir, False, None),
@@ -4913,7 +5152,7 @@ class LegalOneCadastro:
             if titulo_proc:
                 try:
                     titulo_seletor = (
-                        self._encontrar_input_por_label_exato('TÃ­tulo')
+                        self._encontrar_input_por_label_exato('Titulo')
                         or self._encontrar_input_por_label_exato('Titulo')
                         or self._resolver_seletor_por_label('TÃ­tulo')
                         or 'input[id*="title"]:not([type="hidden"]), input[id*="titulo"]:not([type="hidden"]), input[name*="title"]:not([type="hidden"]), input[name*="Title"]:not([type="hidden"]), input[placeholder*="Ã­tulo" i]'
@@ -4965,12 +5204,17 @@ class LegalOneCadastro:
                     self._tratar_modal_criacao_obrigatoria(nome=cliente, documento=doc_cliente)
                     atual = self._valor_limpo(self._ler_valor_campo_formulario('Cliente principal')) or ''
                 if (not atual) or self._calcular_similaridade(cliente, atual) < 0.45:
-                    self._fallback_cua_combobox(cliente_seletor, cliente, 'Cliente Principal', 'Cliente principal')
+                    self._preencher_campo_visual('Cliente principal', cliente, criar=True)
                     atual = self._valor_limpo(self._ler_valor_campo_formulario('Cliente principal')) or ''
                     if (not atual) or self._calcular_similaridade(cliente, atual) < 0.45:
                         dados.setdefault('_qa_warnings', []).append(
                             f"Cliente principal pode estar ERRADO: formulario='{atual or 'VAZIO'}', esperado='{cliente}'"
                         )
+                # contato veio capturado do orgao? cria manualmente
+                if not self._corrigir_captura_orgao(cliente_seletor, cliente, doc_cliente, 'Cliente principal'):
+                    dados.setdefault('_qa_warnings', []).append(
+                        "Cliente principal capturado do orgao - conferir/adicionar manualmente"
+                    )
 
             # 2. PosiÃ§Ã£o * (Autor/RÃ©u/Reclamado/Reclamante)
             posicao = (
@@ -4996,9 +5240,11 @@ class LegalOneCadastro:
                     posicao = 'Reclamado'  # Default para processos trabalhistas
 
             if posicao:
+                # campo Posicao aceita so o termo base, sem status entre parenteses
+                posicao = re.sub(r"\s*\([^)]*\)", "", str(posicao)).strip() or posicao
                 logger.info(f"   â†ª PosiÃ§Ã£o resolvida: {posicao}")
                 posicao_seletor = (
-                    self._encontrar_input_por_label_exato('PosiÃ§Ã£o')
+                    self._encontrar_input_por_label_exato('Posicao')
                     or '#input-position, input[id*="position"]'
                 )
                 self.preencher_campo_autocomplete(
@@ -5015,7 +5261,7 @@ class LegalOneCadastro:
                         permitir_adicionar=False,
                     )
                 if not self._valor_limpo(self._ler_valor_campo_formulario('Posição')):
-                    self._fallback_cua_combobox(posicao_seletor, posicao, 'Posição', 'Posição')
+                    self._preencher_campo_visual('Posição', posicao)
                     if not self._valor_limpo(self._ler_valor_campo_formulario('Posição')):
                         dados.setdefault('_qa_warnings', []).append(
                             f"Posição pode ter ficado VAZIA (esperado '{posicao}')"
@@ -5036,8 +5282,9 @@ class LegalOneCadastro:
             )
             contrario = self._nome_parte(self._valor_limpo(contrario) or '') or None
             if contrario:
-                # Busca o input pelo label exato para evitar preencher campo errado
-                contrario_seletor = self._encontrar_input_por_label_exato('ContrÃ¡rio principal')
+                # Busca o input pelo label exato (ASCII: normalizar remove acentos dos dois lados;
+                # a string mojibake 'ContrÃ¡rio' nunca casava com o label 'Contrário' da tela)
+                contrario_seletor = self._encontrar_input_por_label_exato('Contrario principal')
                 if not contrario_seletor:
                     contrario_seletor = '#input-main-opposite-11-input'
                 self.preencher_campo_autocomplete(
@@ -5052,13 +5299,15 @@ class LegalOneCadastro:
                 if not self._valor_limpo(self._ler_valor_campo_formulario('Contrário Principal')):
                     # compostos ("A; B; C") entram só com o principal no fallback
                     principal = str(contrario).split(';')[0].strip()
-                    self._fallback_cua_combobox(
-                        contrario_seletor, principal, 'Contrário Principal', 'Contrário Principal'
-                    )
+                    self._preencher_campo_visual('Contrário Principal', principal, criar=True)
                     if not self._valor_limpo(self._ler_valor_campo_formulario('Contrário Principal')):
                         dados.setdefault('_qa_warnings', []).append(
                             f"Contrário Principal pode ter ficado VAZIO (esperado '{principal}')"
                         )
+                if not self._corrigir_captura_orgao(contrario_seletor, contrario, doc_contrario, 'Contrário principal'):
+                    dados.setdefault('_qa_warnings', []).append(
+                        "Contrário principal capturado do orgao - conferir/adicionar manualmente"
+                    )
 
             # 4. ResponsÃ¡vel principal * (default: Paollo Sanchez)
             # A chave 'advogado' do Forms mapeia para o ResponsÃ¡vel principal no LegalOne.
@@ -5078,9 +5327,9 @@ class LegalOneCadastro:
                 responsavel = 'Paollo Sanchez'  # Default
             try:
                 # Busca o input pelo label exato para nÃ£o confundir com 'EscritÃ³rio responsÃ¡vel'
-                responsavel_seletor = self._encontrar_input_por_label_exato('ResponsÃ¡vel principal')
+                responsavel_seletor = self._encontrar_input_por_label_exato('Responsavel principal')
                 if not responsavel_seletor:
-                    responsavel_seletor = self._encontrar_input_por_label_exato('ResponsÃ¡vel')
+                    responsavel_seletor = self._encontrar_input_por_label_exato('Responsavel')
                 if not responsavel_seletor:
                     responsavel_seletor = '#input-main-responsible-input'
                 self.preencher_campo_autocomplete(
@@ -5113,7 +5362,7 @@ class LegalOneCadastro:
             if negociacao:
                 try:
                     seletor_negociacao = (
-                        self._encontrar_input_por_label_exato('NegociaÃ§Ã£o de contrato de honorÃ¡rios')
+                        self._encontrar_input_por_label_exato('Negociacao de contrato de honorarios')
                         or '#input-negotiation-contract, input[id*="negotiation"]'
                     )
                     campo_negociacao = self.page.query_selector(seletor_negociacao)
@@ -5186,7 +5435,7 @@ class LegalOneCadastro:
                 logger.info("   â„¹ NegociaÃ§Ã£o de contrato de honorÃ¡rios nÃ£o informada; preenchendo com 'NegociaÃ§Ã£o padrÃ£o'")
                 try:
                     seletor_negociacao = (
-                        self._encontrar_input_por_label_exato('NegociaÃ§Ã£o de contrato de honorÃ¡rios')
+                        self._encontrar_input_por_label_exato('Negociacao de contrato de honorarios')
                         or '#input-negotiation-contract, input[id*="negotiation"]'
                     )
                     campo_negociacao = self.page.query_selector(seletor_negociacao)
@@ -5347,7 +5596,7 @@ class LegalOneCadastro:
             #   - Se nenhum resultado com cliente â†’ "NegociaÃ§Ã£o padrÃ£o pro bono"
             try:
                 honorar_seletor = (
-                    self._encontrar_input_por_label_exato('Contrato de honorÃ¡rios')
+                    self._encontrar_input_por_label_exato('Contrato de honorarios')
                     or 'input[id*="honorar"]'
                 )
                 campo_h = self.page.wait_for_selector(honorar_seletor, state='visible', timeout=5000)
@@ -5873,7 +6122,6 @@ class LegalOneCadastro:
                 '[class*="command-edit"]:has-text("Alterar")',
                 'button:has-text("Alterar processo")',
                 'a:has-text("Alterar processo")',
-                'a:has-text("Alterar")',
             ]
             for sel in seletores_alterar:
                 try:
@@ -6773,26 +7021,27 @@ class LegalOneCadastro:
                     # Rascunho so avanca por Editar > Continuar preenchimento
                     cnj_rasc = dados_processo.get('cnj')
                     if self._continuar_preenchimento_rascunho(cnj_rasc):
-                        logger.info("ðŸ“ Rascunho reaberto - completando cadastro...")
+                        logger.info("Rascunho reaberto - completando cadastro...")
                         self.preencher_campos_obrigatorios(dados_processo)
                         self.preencher_detalhes_faltantes(dados_processo)
                         if self.clicar_salvar():
                             if self.realizar_acoes_pos_cadastro(dados_processo):
                                 return self._confirmar_no_acervo(dados_processo)
-                            return False
-                    elif not getattr(self, '_rascunho_reiniciado', False):
-                        # nao deu p/ continuar: descarta o rascunho e refaz do zero (uma vez)
+                        return False
+                    # Nao reabriu o rascunho: exclui e refaz do zero (uma vez); senao FALHA limpa.
+                    # NUNCA redigitar o CNJ e clicar 'Alterar' aqui -> isso levava a tela de PERFIL.
+                    if not getattr(self, '_rascunho_reiniciado', False):
                         self._rascunho_reiniciado = True
                         if self._excluir_rascunho(cnj_rasc):
                             logger.info("Rascunho excluido - refazendo o cadastro do zero...")
                             self._captura_em_rascunhos = False
                             self._processo_ja_cadastrado = False
                             return self.cadastrar_processo(dados_processo)
-                    logger.info("ðŸ”„ Processo jÃ¡ existente detectado; abrindo processo para alteraÃ§Ã£o e cadastro de pedidos...")
-                    if self.realizar_acoes_pos_cadastro(dados_processo):
-                        logger.info("âœ… Fluxo de alteraÃ§Ã£o do processo existente concluÃ­do.")
-                        return self._confirmar_no_acervo(dados_processo)
-                    logger.error("âŒ Falha ao abrir/alterar processo existente apÃ³s envio para rascunhos.")
+                    self.last_error_reason = (
+                        "Nao foi possivel reabrir o rascunho em Pre-cadastro "
+                        "(Editar > Continuar com o preenchimento)"
+                    )
+                    logger.error("   [RASCUNHO] " + self.last_error_reason)
                     return False
                 logger.warning("âš  NÃ£o foi possÃ­vel executar o fluxo 'Pular etapa' -> 'PrÃ©-cadastro'")
                 return False
@@ -7127,6 +7376,12 @@ class LegalOneCadastro:
             return True
 
     def _confirmar_salvamento(self, timeout_s: int = 30) -> bool:
+        # guarda: se estamos na tela de PERFIL/config, salvar ali nao cadastra processo
+        _u = (self.page.url or "").lower()
+        if "/config/" in _u or "editprofile" in _u or "usuarios" in _u:
+            self.last_error_reason = "Bot caiu na tela de perfil do usuario, nao no cadastro do processo"
+            logger.error("   [SALVAR] " + self.last_error_reason)
+            return False
         """Confirma que o LegalOne ACEITOU o salvar (sai da tela de edicao, sem 'Campo obrigatorio').
 
         Clicar em Salvar com obrigatorios vazios mantem o formulario aberto (vira rascunho)
@@ -7166,19 +7421,37 @@ class LegalOneCadastro:
     _JS_PENDENTES = """
         () => {
           const vis = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+          const labels = [];
+          const add = (r) => { r = (r || '').replace(/[*\\s]+$/, '').trim(); if (r && !labels.includes(r)) labels.push(r); };
+          // 1) mensagens 'Campo obrigatorio' visiveis
           const msgs = [...document.querySelectorAll('*')].filter(e =>
             vis(e) && e.children.length === 0 && /campo obrigat/i.test(e.innerText || '')
           );
-          const labels = [];
           for (const m of msgs) {
             let n = m, rotulo = '';
             for (let i = 0; i < 6 && n; i++) {
               n = n.parentElement;
               if (!n) break;
               const lb = n.querySelector('label');
-              if (lb && (lb.innerText || '').trim()) { rotulo = lb.innerText.replace(/[*\s]+$/, '').trim(); break; }
+              if (lb && (lb.innerText || '').trim()) { rotulo = lb.innerText; break; }
             }
-            if (rotulo && !labels.includes(rotulo)) labels.push(rotulo);
+            if (rotulo) add(rotulo);
+          }
+          // 2) labels obrigatorios (com *) cujo campo esta vazio
+          for (const lb of document.querySelectorAll('label')) {
+            if (!vis(lb)) continue;
+            const txt = (lb.innerText || '');
+            if (!txt.includes('*')) continue;
+            const grp = lb.closest('.form-group, .field, [class*="field"], [class*="form-"]') || lb.parentElement;
+            if (!grp) continue;
+            const inp = grp.querySelector('input:not([type=hidden]), select, textarea, [role="combobox"]');
+            if (!inp) continue;
+            let vazio;
+            if (inp.tagName === 'SELECT') vazio = !inp.value;
+            else vazio = !((inp.value || '').trim());
+            const chip = grp.querySelector('.bento-chip, .bento-tag, .selected-item, [aria-selected="true"], .ng-value, .k-input-value-text');
+            if (chip && (chip.innerText || '').trim()) vazio = false;
+            if (vazio) add(txt);
           }
           const btn = document.querySelector('#btnSave')
             || [...document.querySelectorAll('button')].find(b => /salvar/i.test(b.innerText || '') && !/rascunho/i.test(b.innerText || ''));
@@ -7565,19 +7838,22 @@ class LegalOneCadastro:
                 'a.grid-edit-action-row:has-text("Alterar")',
                 'a.grid-edit-action-row[href*="/processos/Processos/edit/"]',
                 'a[href*="/processos/Processos/edit/"]:has-text("Alterar")',
-                'a[title*="Alterar" i]',
                 'a:has-text("Alterar Processo")',
-                'a:has-text("Alterar")',
             ]
             for sel in seletores_alterar:
                 try:
                     el = self.page.wait_for_selector(sel, state='visible', timeout=5000)
                     if el:
                         href = el.get_attribute('href') or ''
+                        if 'usuarios' in href.lower() or 'editprofile' in href.lower() or '/config/' in href.lower():
+                            continue  # esse 'Alterar' vai pro PERFIL do usuario, nao pro processo
                         el.click()
-                        logger.info(f"   OK Processo aberto em modo Alterar via busca ({sel})")
                         self.page.wait_for_load_state('domcontentloaded')
                         time.sleep(2)
+                        if '/config/' in (self.page.url or '').lower() or 'editprofile' in (self.page.url or '').lower():
+                            logger.warning('   [ALTERAR] caiu na tela de perfil - ignorando')
+                            continue
+                        logger.info(f"   OK Processo aberto em modo Alterar via busca ({sel})")
                         return True
                 except Exception:
                     continue
@@ -8404,7 +8680,6 @@ class LegalOneCadastro:
                 '[class*="command-edit"]:has-text("Alterar")',
                 'button:has-text("Alterar processo")',
                 'a:has-text("Alterar processo")',
-                'a:has-text("Alterar")',
             ]
             for _sel in _seletores_alterar:
                 try:
