@@ -346,6 +346,8 @@ class LegalOneCadastro:
                 "--disable-extensions",
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
+                # expõe a árvore de acessibilidade (AT-SPI) p/ o cua-driver no servidor
+                "--force-renderer-accessibility",
             ],
             "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "locale": "pt-BR",
@@ -1149,7 +1151,9 @@ class LegalOneCadastro:
                 ('ido', 'ida'), ('ida', 'ido'),
                 ('o', 'a'), ('a', 'o'),
             ]
-            ultima_limpa = re.sub(r'[^\wÃ€-Ã¿-]', '', ultima, flags=re.UNICODE)
+            # À-ÿ = letras acentuadas; escapes evitam corromper o range se o
+            # arquivo sofrer re-encoding (o range literal ja quebrou uma vez em producao)
+            ultima_limpa = re.sub(r'[^\wÀ-ÿ-]', '', ultima, flags=re.UNICODE)
             ultima_limpa_lower = ultima_limpa.lower()
             for origem, destino in trocas_sufixo:
                 if len(ultima_limpa_lower) > len(origem) + 2 and ultima_limpa_lower.endswith(origem):
@@ -4752,6 +4756,21 @@ class LegalOneCadastro:
                 # imediatamente apÃ³s o autocomplete se a parte nÃ£o estÃ¡ cadastrada
                 self._tratar_modal_criacao_obrigatoria(nome=cliente, documento=doc_cliente)
 
+                # Captura do orgao pode deixar contato errado no campo (ex.: reclamada
+                # no lugar da cliente); confere o que ficou e refaz uma vez se nao bater
+                atual = self._valor_limpo(self._ler_valor_campo_formulario('Cliente principal')) or ''
+                if atual and self._calcular_similaridade(cliente, atual) < 0.45:
+                    logger.warning(f"   Cliente principal divergente: '{atual}' != '{cliente}' - refazendo")
+                    self.preencher_campo_autocomplete(
+                        cliente_seletor, cliente, 'Cliente Principal', cnpj=doc_cliente,
+                    )
+                    self._tratar_modal_criacao_obrigatoria(nome=cliente, documento=doc_cliente)
+                    atual = self._valor_limpo(self._ler_valor_campo_formulario('Cliente principal')) or ''
+                    if atual and self._calcular_similaridade(cliente, atual) < 0.45:
+                        dados.setdefault('_qa_warnings', []).append(
+                            f"Cliente principal pode estar ERRADO: formulario='{atual}', esperado='{cliente}'"
+                        )
+
             # 2. PosiÃ§Ã£o * (Autor/RÃ©u/Reclamado/Reclamante)
             posicao = (
                 dados.get('posicao')
@@ -4867,6 +4886,12 @@ class LegalOneCadastro:
                 )
             )
             negociacao = self._valor_limpo(negociacao)
+            if not negociacao:
+                # Campo e obrigatorio: sem ele o LegalOne rejeita o salvar
+                negociacao = os.getenv('LEGALONE_NEGOCIACAO_PADRAO', 'Negociação padrão')
+                dados.setdefault('_qa_warnings', []).append(
+                    f"Negociação de honorários não veio nos dados - usado padrão '{negociacao}'"
+                )
             if negociacao:
                 try:
                     seletor_negociacao = (
@@ -6589,6 +6614,15 @@ class LegalOneCadastro:
             except Exception as _qa_err:
                 logger.warning(f"[QA] Validador indisponÃ­vel: {_qa_err}")
 
+            # Numero da pasta (ex.: "Proc - 0007344") ja aparece no formulario - captura p/ email
+            try:
+                pasta = self._valor_limpo(self._ler_valor_campo_formulario('Pasta'))
+                if pasta:
+                    dados_processo['numero_pasta'] = pasta
+                    logger.info(f"   [PASTA] {pasta}")
+            except Exception:
+                pass
+
             # 7. Clica no botÃ£o Salvar
             if self.clicar_salvar():
                 # 8. Realiza aÃ§Ãµes pÃ³s-cadastro (Clicar Proc -> Alterar -> Add Pedido)
@@ -6800,6 +6834,43 @@ class LegalOneCadastro:
         logger.warning("   âš  Modal obrigatÃ³rio ainda visÃ­vel apÃ³s Salvar â€” continuando fluxo")
         return True  # NÃ£o bloqueia: tentamos tratar; o fluxo principal continua
 
+    def _confirmar_salvamento(self, timeout_s: int = 30) -> bool:
+        """Confirma que o LegalOne ACEITOU o salvar (sai da tela de edicao, sem 'Campo obrigatorio').
+
+        Clicar em Salvar com obrigatorios vazios mantem o formulario aberto (vira rascunho)
+        - antes disso o robo declarava sucesso sem o processo existir.
+        """
+        fim = time.time() + timeout_s
+        while time.time() < fim:
+            time.sleep(2)
+            try:
+                info = self.page.evaluate(
+                    """
+                    () => {
+                        const texto = document.body.innerText || '';
+                        const erros = (texto.match(/campo obrigat/gi) || []).length;
+                        const aindaNoForm = !!document.querySelector('#btnSave')
+                            || /Adicionar processo/i.test(texto.slice(0, 3000));
+                        return {erros, aindaNoForm};
+                    }
+                    """
+                )
+            except Exception:
+                continue  # navegacao em curso
+            if info.get('erros'):
+                self.last_error_reason = (
+                    f"Salvar REJEITADO pelo LegalOne: {info['erros']} campo(s) obrigatorio(s) vazio(s) - processo ficou em rascunho"
+                )
+                logger.error(f"   [SALVAR] {self.last_error_reason}")
+                self._registrar_diagnostico_falha("Salvar rejeitado - campos obrigatorios")
+                return False
+            if not info.get('aindaNoForm'):
+                logger.info("   [SALVAR] Salvamento confirmado (saiu da tela de edicao)")
+                return True
+        self.last_error_reason = "Salvar NAO confirmado: formulario continuou aberto apos o clique"
+        logger.error(f"   [SALVAR] {self.last_error_reason}")
+        return False
+
     def clicar_salvar(self):
         """Clica no botÃ£o Salvar ao final do formulÃ¡rio"""
         try:
@@ -6841,7 +6912,7 @@ class LegalOneCadastro:
                             except Exception as e:
                                 logger.error(f"   âŒ Erro em _tratar_modal_criacao_obrigatoria: {e}")
                             time.sleep(1)
-                            return True
+                            return self._confirmar_salvamento()
                         else:
                             logger.warning("   âš  BotÃ£o Salvar ainda desabilitado - campos obrigatÃ³rios faltando?")
                             return False
@@ -6876,7 +6947,7 @@ class LegalOneCadastro:
                 except Exception as e:
                     logger.error(f"   âŒ Erro em _tratar_modal_criacao_obrigatoria (JS): {e}")
                 time.sleep(1)
-                return True
+                return self._confirmar_salvamento()
 
             logger.warning("   âš  NÃ£o foi possÃ­vel clicar em Salvar")
             return False

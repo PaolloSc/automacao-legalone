@@ -981,6 +981,7 @@ class AutomacaoLegalOne:
         dados_processo = dados_processo or {}
 
         cnj = dados_processo.get('cnj', 'N/A')
+        pasta = dados_processo.get('numero_pasta') or 'N/A'
         cliente = dados_processo.get('cliente') or dados_processo.get('autor') or 'N/A'
         contrario = dados_processo.get('contrario') or dados_processo.get('reu') or 'N/A'
         link = email_data.get('forms_link', 'N/A')
@@ -1049,6 +1050,7 @@ class AutomacaoLegalOne:
 <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;">
   <tr><th align="left">Data/Hora</th><td>{timestamp}</td></tr>
   <tr><th align="left">CNJ</th><td>{cnj}</td></tr>
+  <tr><th align="left">Pasta</th><td>{pasta}</td></tr>
   <tr><th align="left">Cliente</th><td>{cliente}</td></tr>
   <tr><th align="left">Contrário</th><td>{contrario}</td></tr>
   <tr><th align="left">Forms</th><td><a href="{link}">{link}</a></td></tr>
@@ -1062,7 +1064,7 @@ class AutomacaoLegalOne:
 
         texto = (
             f"Cadastro concluído - LegalOne\n\n"
-            f"Data/Hora: {timestamp}\nCNJ: {cnj}\nCliente: {cliente}\n"
+            f"Data/Hora: {timestamp}\nCNJ: {cnj}\nPasta: {pasta}\nCliente: {cliente}\n"
             f"Contrário: {contrario}\nForms: {link}\n"
             f"Pedidos: {preenchidos}/{total}\n"
             f"QA Warnings: {len(qa_warnings)}\n"
@@ -1071,7 +1073,7 @@ class AutomacaoLegalOne:
 
         notificacao = {
             'cnj': cnj,
-            'subject': f"[OK CADASTRO] CNJ {cnj} — cadastro concluído",
+            'subject': f"[OK CADASTRO] Pasta {pasta} — CNJ {cnj} — cadastro concluído",
             'text': texto,
             'html': html,
             'to': self._destinatarios_erro(),
