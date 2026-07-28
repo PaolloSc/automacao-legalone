@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from datetime import datetime
 from typing import Any
 
@@ -41,10 +42,17 @@ MONITORAMENTO_SELECTORS = [
 
 
 class QAValidator:
-    def __init__(self, page: Any, dados_processo: dict, screenshot_dir: str | None = None):
+    def __init__(self, page: Any, dados_processo: dict, screenshot_dir: str | None = None,
+                 cadastro: Any = None):
         self.page = page
         self.dados = dados_processo or {}
         self.warnings: list[str] = []
+        # Instancia de LegalOneCadastro (opcional). Quando fornecida, a leitura de
+        # campo usa _ler_valor_campo_formulario() — o mesmo método já testado que
+        # o restante do bot usa pra preencher/conferir campos — em vez dos
+        # seletores CSS genéricos abaixo, que não bateam com os componentes
+        # Angular reais do LegalOne e geravam falsos positivos de "campo VAZIO".
+        self.cadastro = cadastro
         self.screenshot_dir = screenshot_dir or os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "qa_screenshots"
         )
@@ -55,7 +63,26 @@ class QAValidator:
         self.warnings.append(msg)
         logger.warning(f"[QA] ⚠ {msg}")
 
-    def _valor_campo(self, seletores: list[str]) -> str | None:
+    @staticmethod
+    def _limpar_esperado(valor: Any) -> str:
+        """Remove anotações entre parênteses (papel da parte, CNPJ, status) do
+        valor bruto extraído, para comparar com o que de fato foi digitado no
+        formulário — o preenchimento real já limpa isso (_nome_parte, regex de
+        posição em legalone_cadastro.py); comparar contra o valor bruto gerava
+        avisos falsos do tipo 'esperado: X (Reclamante)' quando o campo estava
+        preenchido corretamente com só 'X'.
+        """
+        texto = str(valor or "").strip()
+        return re.sub(r"\s*\([^)]*\)", "", texto).strip() or texto
+
+    def _valor_campo(self, seletores: list[str], rotulo: str | None = None) -> str | None:
+        if self.cadastro is not None and rotulo:
+            try:
+                valor = self.cadastro._ler_valor_campo_formulario(rotulo)
+                if valor:
+                    return valor.strip()
+            except Exception:
+                pass
         for sel in seletores:
             try:
                 loc = self.page.locator(sel).first
@@ -104,18 +131,19 @@ class QAValidator:
 
     def _validar_campos_obrigatorios(self):
         for rotulo, seletores, chave_dado in CAMPOS_OBRIGATORIOS:
-            esperado = self.dados.get(chave_dado)
-            if not esperado:
-                esperado = (self.dados.get("outros_dados", {}) or {}).get(rotulo)
-            if not esperado:
+            esperado_bruto = self.dados.get(chave_dado)
+            if not esperado_bruto:
+                esperado_bruto = (self.dados.get("outros_dados", {}) or {}).get(rotulo)
+            if not esperado_bruto:
                 continue  # não temos o dado → não validamos
-            valor = self._valor_campo(seletores)
+            esperado = self._limpar_esperado(esperado_bruto)
+            valor = self._valor_campo(seletores, rotulo)
             if not valor:
                 self._log_warn(
                     f"Campo '{rotulo}' VAZIO no formulário (dados disponíveis: '{esperado}')"
                 )
-            elif str(esperado).strip().lower() not in str(valor).strip().lower() and \
-                    str(valor).strip().lower() not in str(esperado).strip().lower():
+            elif esperado.strip().lower() not in valor.strip().lower() and \
+                    valor.strip().lower() not in esperado.strip().lower():
                 self._log_warn(
                     f"Campo '{rotulo}' com valor divergente: form='{valor}' esperado='{esperado}'"
                 )

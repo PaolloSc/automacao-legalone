@@ -59,12 +59,82 @@ PEDIDOS_SINONIMOS = {
     "danos morais": ["dano moral", "d. morais"],
 }
 
+PEDIDOS_CATALOGO_LEGALONE = (
+    "Acúmulo de função", "Adicional de insalubridade", "Adicional de periculosidade",
+    "Adicional noturno", "Aviso prévio", "Benefício CCT", "Comissões",
+    "Contribuições previdenciárias", "Correção monetária", "Desvio de Função",
+    "Diferença salarial", "Entrega/Retificação/Indenização - PPP", "Equiparação Salarial",
+    "Férias + 1/3", "FGTS + 40%", "Honorários advocatícios sucumbenciais",
+    "Horas bip", "Horas extras", "Ilicitude terceirização",
+    "Indenização estabilidade acidentária/doença", "Indenização estabilidade Cipa",
+    "Indenização estabilidade gravídica", "Indenização por danos estéticos",
+    "Indenização por danos materiais", "Indenização por danos morais",
+    "Intervalo interjornada", "Intervalo intrajornada", "Multa art. 479",
+    "Multas convencionais", "Multa do artigo 467 da CLT", "Multa do artigo 477, §8º da CLT",
+    "Pensão vitalícia", "Plano de saúde", "PLR", "Salários", "Saldo de salário",
+    "Vale alimentação", "Vale cultura", "Vale transporte", "Verbas rescisórias",
+    "Vínculo", "Vínculo - Pejotização", "13º salario",
+    # Variações verificadas no lookup real do LegalOne.
+    "13º Salario Proporcional", "Férias Proporcionais", "FGTS+40%",
+    "Multa", "Multa artigo 467 clt", "Multa artigo 477 clt",
+    "Entrega das guias CD/SD", "Entrega das guias TRCT",
+    "Parcelas Seguro-desemprego", "Indenização adicional", "Saldo de salario",
+)
+
+PEDIDOS_ALIASES_CATALOGO = {
+    "aviso previo": "Aviso prévio",
+    "13 proporcional": "13º salario",
+    "13 salario": "13º salario",
+    "ferias proporcionais": "Férias Proporcionais",
+    "fgts 40": "FGTS+40%",
+    "multa 40 fgts": "FGTS+40%",
+    "multa art 467": "Multa artigo 467 clt",
+    "multa art 477": "Multa artigo 477 clt",
+    "hora extra": "Horas extras",
+    "honorarios": "Honorários advocatícios sucumbenciais",
+    "verbas rescisorias": "Verbas rescisórias",
+    "seguro desemprego": "Parcelas Seguro-desemprego",
+    "liberacao de guias": "Entrega das guias CD/SD",
+    "indenizacao": "Indenização adicional",
+}
+
 
 def _normalizar_pedido(s: str) -> str:
     if not s:
         return ""
     s = unicodedata.normalize('NFKD', str(s)).encode('ascii', 'ignore').decode('ascii')
     return s.strip().lower()
+
+
+def _resolver_pedido_catalogo(nome: str) -> str:
+    """Converte texto livre do Copilot/Forms para a opção canônica do LegalOne."""
+    original = str(nome or "").strip()
+    normalizado = _normalizar_pedido(original)
+    if not normalizado:
+        return original
+
+    catalogo_normalizado = {
+        _normalizar_pedido(opcao): opcao for opcao in PEDIDOS_CATALOGO_LEGALONE
+    }
+    if normalizado in catalogo_normalizado:
+        return catalogo_normalizado[normalizado]
+
+    for alias, opcao in PEDIDOS_ALIASES_CATALOGO.items():
+        if alias in normalizado or normalizado in alias:
+            return opcao
+
+    for chave, sinonimos in PEDIDOS_SINONIMOS.items():
+        if normalizado == _normalizar_pedido(chave) or any(
+            normalizado == _normalizar_pedido(sinonimo) for sinonimo in sinonimos
+        ):
+            for opcao_norm, opcao in catalogo_normalizado.items():
+                if _normalizar_pedido(chave) in opcao_norm or opcao_norm in _normalizar_pedido(chave):
+                    return opcao
+
+    candidatos = difflib.get_close_matches(
+        normalizado, list(catalogo_normalizado), n=1, cutoff=0.78
+    )
+    return catalogo_normalizado[candidatos[0]] if candidatos else original
 
 
 LOGIN_URL = os.getenv(
@@ -582,7 +652,7 @@ class LegalOneCadastro:
         logger.error("   âŒ Não foi possível navegar para 'Pré-cadastro'")
         return False
 
-    _JS_MARCAR = """
+    _JS_MARCAR = r"""
         (maxItens) => {
           document.querySelectorAll('.__ai_badge').forEach(b => b.remove());
           const sx = window.scrollX, sy = window.scrollY;
@@ -1218,6 +1288,92 @@ class LegalOneCadastro:
             )
         except Exception:
             return False
+
+    def _preencher_previsao_e_resultado(self, dados_processo: dict | None) -> bool:
+        """Preenche previsão e resultado após os pedidos, quando informados.
+
+        ``probabilidade`` (Êxito/Perda) e ``grau_probabilidade``
+        (Provável/Possível/Remota) são campos distintos no LegalOne e não
+        devem ser usados como alternativas um do outro.
+        """
+        dados = dados_processo or {}
+        outros = dados.get('outros_dados') or {}
+
+        def obter(campo: str) -> str:
+            valor = self._valor_limpo(dados.get(campo) or outros.get(campo))
+            if self._normalizar_texto_busca(valor) in {
+                'nao localizado',
+                'nao informada',
+                'nao informado',
+                'n a',
+                'na',
+            }:
+                return ''
+            return valor
+
+        campos_lista = (
+            ('Contingência', obter('contingencia')),
+            ('Probabilidade atual', obter('probabilidade')),
+            ('Faixa de probabilidade atual', obter('grau_probabilidade')),
+            ('Risco', obter('risco')),
+            ('Tipo de resultado', obter('tipo_resultado')),
+            ('Resultado', obter('resultado')),
+        )
+        campos_texto = (
+            ('Motivo do resultado', obter('motivo_resultado')),
+        )
+        data_resultado = self._normalizar_data_legalone(obter('data_resultado'))
+
+        if not any(valor for _, valor in campos_lista + campos_texto) and not data_resultado:
+            logger.info('   ℹ️ Previsão/resultado não informados; pulando etapa.')
+            return True
+
+        logger.info('4b️⃣ Preenchendo previsão e resultado...')
+        falhas = []
+
+        for label, valor in campos_lista:
+            if not valor:
+                continue
+            seletor = self._encontrar_input_por_label_exato(label)
+            preencheu = False
+            if seletor:
+                preencheu = self.preencher_campo_autocomplete(
+                    seletor,
+                    valor,
+                    label,
+                    permitir_adicionar=False,
+                )
+            if not preencheu:
+                preencheu = self._fill_by_label(label, valor)
+            if preencheu:
+                logger.info(f'   ✓ {label}: {valor}')
+            else:
+                logger.warning(f'   ⚠️ Campo de previsão/resultado não encontrado: {label}')
+                falhas.append(label)
+
+        for label, valor in campos_texto:
+            if not valor:
+                continue
+            if self._fill_by_label(label, valor):
+                logger.info(f'   ✓ {label} preenchido')
+            else:
+                logger.warning(f'   ⚠️ Campo de previsão/resultado não encontrado: {label}')
+                falhas.append(label)
+
+        if data_resultado:
+            if self._fill_by_label('Data do resultado', data_resultado):
+                logger.info(f'   ✓ Data do resultado: {data_resultado}')
+            else:
+                logger.warning('   ⚠️ Campo de previsão/resultado não encontrado: Data do resultado')
+                falhas.append('Data do resultado')
+
+        if falhas:
+            self.last_error_reason = (
+                'Previsão/resultado informado, mas não preenchido no LegalOne: '
+                + ', '.join(falhas)
+            )
+            return False
+        return True
 
     # -------------------------------------------------------------------
     # Bento-combobox: dropdown grid do LegalOne
@@ -2197,6 +2353,11 @@ class LegalOneCadastro:
         if not txt:
             return False
         return (
+            # O LegalOne pode entregar "órgão" com codificação corrompida
+            # ("�rg�o") no texto do combobox. "capturado no" é a parte
+            # estável e exclusiva do aviso que exige criação manual.
+            "capturado no" in txt
+            or
             "capturado no órgão" in txt
             or "capturado no orgao" in txt
             or "foi capturado no órgão" in txt
@@ -2442,20 +2603,51 @@ class LegalOneCadastro:
         logger.warning("      ⚠ Botão 'Adicionar' não encontrado no dropdown")
         return False
 
-    def _alerta_contato_exige_adicao_manual(self) -> bool:
-        """Retorna True quando o LegalOne exige adicionar contato manualmente."""
+    def _alerta_contato_exige_adicao_manual(self, seletor: str | None = None) -> bool:
+        """Retorna True quando o LegalOne exige adicionar contato manualmente.
+
+        Com ``seletor``, olha só a vizinhança daquele input. Sem ele, varre o
+        documento — o que inclui '.ng-star-inserted' (presente em quase todo
+        elemento Angular) e portanto pega o alerta de OUTRO campo, gerando
+        correção indevida. Prefira sempre passar o seletor do campo.
+        """
         if not self.page:
             return False
         try:
-            texto_alerta = self.page.evaluate(
-                """
-                () => {
-                    const alerts = Array.from(document.querySelectorAll('[role="alert"], .ng-star-inserted'));
-                    const textos = alerts.map(a => (a.innerText || a.textContent || '').trim().toLowerCase());
-                    return textos.join(' | ');
-                }
-                """
-            ) or ""
+            texto_alerta = None
+            if seletor:
+                # Medido no DOM real do LegalOne (litigation/create, 28/07): todo
+                # [role="alert"] mora no '.form-group' do proprio campo, e o
+                # form-group do Contrario Principal tem exatamente 1 input — nao
+                # da pra pegar alerta do vizinho. A distancia do input ao alerta
+                # varia (2 a 5 niveis), entao contar niveis erra; closest acerta.
+                # ponytail: fallback de 5 niveis se a tela nao usar .form-group
+                # (ex.: modal de contato).
+                texto_alerta = self.page.evaluate(
+                    """
+                    (sel) => {
+                        const inp = document.querySelector(sel);
+                        if (!inp) return null;
+                        const grupo = inp.closest('.form-group');
+                        if (grupo) return (grupo.innerText || '').trim().toLowerCase();
+                        let no = inp;
+                        for (let i = 0; i < 5 && no.parentElement; i++) no = no.parentElement;
+                        return (no.innerText || no.textContent || '').trim().toLowerCase();
+                    }
+                    """,
+                    str(seletor).split(',')[0].strip(),
+                )
+            if texto_alerta is None:
+                texto_alerta = self.page.evaluate(
+                    """
+                    () => {
+                        const alerts = Array.from(document.querySelectorAll('[role="alert"], .ng-star-inserted'));
+                        const textos = alerts.map(a => (a.innerText || a.textContent || '').trim().toLowerCase());
+                        return textos.join(' | ');
+                    }
+                    """
+                )
+            texto_alerta = texto_alerta or ""
             if self._texto_indica_captura_orgao(texto_alerta):
                 return True
             return (
@@ -2622,7 +2814,7 @@ class LegalOneCadastro:
         """Se o LegalOne acusa 'contato capturado no orgao / adicionar manualmente',
         cria o contato de verdade (o placeholder do tribunal nao pode ficar).
         Retorna True se, ao final, nao ha mais o alerta."""
-        if not self._alerta_contato_exige_adicao_manual():
+        if not self._alerta_contato_exige_adicao_manual(seletor):
             return True
         logger.warning(f"   [CONTATO] '{label}' foi capturado do orgao - criando contato manualmente")
         campo_el = None
@@ -2641,7 +2833,7 @@ class LegalOneCadastro:
         except Exception as e:
             logger.warning(f"   [CONTATO] _adicionar_contato_novo falhou: {str(e)[:80]}")
         time.sleep(2)
-        resolvido = not self._alerta_contato_exige_adicao_manual()
+        resolvido = not self._alerta_contato_exige_adicao_manual(seletor)
         logger.info(f"   [CONTATO] '{label}' criado manualmente: {'OK' if resolvido else 'ainda com alerta'}")
         return resolvido
 
@@ -2845,6 +3037,7 @@ class LegalOneCadastro:
             seletores_pf = ['#naturalPerson-checkbox', 'label:has-text("Pessoa Física")', 'input[value="PF"]', '[data-value="PF"]']
             seletores_pj = ['#legalPerson-checkbox', 'label:has-text("Pessoa Jurídica")', 'input[value="PJ"]', '[data-value="PJ"]']
             seletores_tipo = seletores_pf if eh_pf else seletores_pj
+            tipo_confirmado = False
 
             for sel in seletores_tipo:
                 try:
@@ -2870,6 +3063,35 @@ class LegalOneCadastro:
                         break
                 except Exception:
                     continue
+
+            # O clique no controle customizado pode não trocar o radio de verdade.
+            # Confirma o estado no DOM e tenta `check()` no input real antes de
+            # preencher CPF/CNPJ; nunca continuar com máscara de CPF para uma PJ.
+            tipo_id = '#naturalPerson-checkbox' if eh_pf else '#legalPerson-checkbox'
+            try:
+                modal_loc = self.page.locator('ngb-modal-window').last
+                tipo_input = modal_loc.locator(tipo_id).first
+                if tipo_input.count() > 0:
+                    try:
+                        tipo_input.check(force=True)
+                    except Exception:
+                        tipo_input.click(force=True)
+                    time.sleep(0.4)
+                    tipo_confirmado = bool(
+                        self.page.evaluate(
+                            f"(modal) => !!modal?.querySelector('{tipo_id}')?.checked",
+                            self._obter_modal_contato_ativo() or modal_ativo,
+                        )
+                    )
+            except Exception as e:
+                logger.warning(f"      ⚠ Não foi possível confirmar {tipo_label}: {e}")
+
+            if not tipo_confirmado:
+                logger.error(
+                    f"      âŒ {tipo_label} não ficou selecionada; cancelando criação "
+                    "para não preencher documento no tipo incorreto."
+                )
+                return False
 
             # 4. Preencher nome/razão social (só se estiver vazio)
             # Re-adquire modal_ativo: o clique em PF/PJ pode ter causado re-render Angular.
@@ -5183,7 +5405,7 @@ class LegalOneCadastro:
                     self._encontrar_input_por_label_exato('Cliente principal')
                     or '#input-main-customer-3-input, input[id*="main-customer"]'
                 )
-                self.preencher_campo_autocomplete(
+                cliente_preenchido = self.preencher_campo_autocomplete(
                     cliente_seletor,
                     cliente,
                     'Cliente Principal',
@@ -5210,8 +5432,15 @@ class LegalOneCadastro:
                         dados.setdefault('_qa_warnings', []).append(
                             f"Cliente principal pode estar ERRADO: formulario='{atual or 'VAZIO'}', esperado='{cliente}'"
                         )
-                # contato veio capturado do orgao? cria manualmente
-                if not self._corrigir_captura_orgao(cliente_seletor, cliente, doc_cliente, 'Cliente principal'):
+                # A origem é validada dentro do dropdown, mas isso sozinho não
+                # basta: em 27/07 o placeholder passou e o LegalOne desabilitou o
+                # Salvar. Última rede: se o alerta AINDA estiver no campo, cria o
+                # contato de verdade. O alerta é lido escopado ao input — global
+                # pegaria o alerta de outro campo e geraria um segundo modal.
+                captura_ok = self._corrigir_captura_orgao(
+                    cliente_seletor, cliente, doc_cliente, 'Cliente principal'
+                )
+                if not cliente_preenchido or not captura_ok:
                     dados.setdefault('_qa_warnings', []).append(
                         "Cliente principal capturado do orgao - conferir/adicionar manualmente"
                     )
@@ -5286,8 +5515,13 @@ class LegalOneCadastro:
                 # a string mojibake 'Contrário' nunca casava com o label 'Contrário' da tela)
                 contrario_seletor = self._encontrar_input_por_label_exato('Contrario principal')
                 if not contrario_seletor:
-                    contrario_seletor = '#input-main-opposite-11-input'
-                self.preencher_campo_autocomplete(
+                    # O sufixo numérico é gerado dinamicamente pelo LegalOne
+                    # (por exemplo, input-main-opposite-29-input).
+                    contrario_seletor = (
+                        'input[id^="input-main-opposite-"][id$="-input"], '
+                        '#input-main-opposite-11-input'
+                    )
+                contrario_preenchido = self.preencher_campo_autocomplete(
                     contrario_seletor,
                     contrario,
                     'Contrário Principal',
@@ -5296,15 +5530,46 @@ class LegalOneCadastro:
                 # Idem: verifica modal obrigatório após preencher o contrário
                 self._tratar_modal_criacao_obrigatoria(nome=contrario, documento=doc_contrario)
 
-                if not self._valor_limpo(self._ler_valor_campo_formulario('Contrário Principal')):
-                    # compostos ("A; B; C") entram só com o principal no fallback
-                    principal = str(contrario).split(';')[0].strip()
+                # Não basta o campo estar preenchido: o LegalOne pode manter um
+                # homônimo ou um contato capturado pelo órgão no autocomplete.
+                principal = str(contrario).split(';')[0].strip()
+                atual = self._valor_limpo(
+                    self._ler_valor_campo_formulario('Contrário Principal')
+                ) or ''
+                if atual and self._calcular_similaridade(principal, atual) < 0.45:
+                    logger.warning(
+                        f"   Contrário principal divergente: '{atual}' != '{principal}' - refazendo"
+                    )
+                    self.preencher_campo_autocomplete(
+                        contrario_seletor,
+                        principal,
+                        'Contrário Principal',
+                        cnpj=doc_contrario,
+                    )
+                    self._tratar_modal_criacao_obrigatoria(
+                        nome=principal,
+                        documento=doc_contrario,
+                    )
+                    atual = self._valor_limpo(
+                        self._ler_valor_campo_formulario('Contrário Principal')
+                    ) or ''
+                if not atual or self._calcular_similaridade(principal, atual) < 0.45:
                     self._preencher_campo_visual('Contrário Principal', principal, criar=True)
-                    if not self._valor_limpo(self._ler_valor_campo_formulario('Contrário Principal')):
+                    atual = self._valor_limpo(
+                        self._ler_valor_campo_formulario('Contrário Principal')
+                    ) or ''
+                    if not atual or self._calcular_similaridade(principal, atual) < 0.45:
                         dados.setdefault('_qa_warnings', []).append(
-                            f"Contrário Principal pode ter ficado VAZIO (esperado '{principal}')"
+                            f"Contrário Principal pode estar ERRADO: "
+                            f"formulario='{atual or 'VAZIO'}', esperado='{principal}'"
                         )
-                if not self._corrigir_captura_orgao(contrario_seletor, contrario, doc_contrario, 'Contrário principal'):
+                # Mesma rede final do Cliente principal: foi exatamente aqui que
+                # o placeholder "Itau Unibanco S.A" (Capturado no órgão) travou o
+                # Salvar em 27/07 (CNJ 0000283-33.2024.5.08.0002).
+                captura_ok = self._corrigir_captura_orgao(
+                    contrario_seletor, principal, doc_contrario, 'Contrário principal'
+                )
+                if not contrario_preenchido or not captura_ok:
                     dados.setdefault('_qa_warnings', []).append(
                         "Contrário principal capturado do orgao - conferir/adicionar manualmente"
                     )
@@ -7090,7 +7355,7 @@ class LegalOneCadastro:
             # 6c. QA Validator — valida em tempo real (apenas warnings, não aborta)
             try:
                 from qa_validator import QAValidator
-                qa = QAValidator(self.page, dados_processo)
+                qa = QAValidator(self.page, dados_processo, cadastro=self)
                 qa_warnings = qa.validar_antes_de_salvar()
                 if qa_warnings:
                     dados_processo.setdefault('_qa_warnings', []).extend(qa_warnings)
@@ -7115,6 +7380,10 @@ class LegalOneCadastro:
 
             # 7. Clica no botao Salvar
             if self.clicar_salvar():
+                # O rascunho já foi convertido em processo salvo. Não tente
+                # preencher novamente os campos do formulário de pré-cadastro
+                # na página de edição antes de adicionar os pedidos.
+                self._captura_em_rascunhos = False
                 # 8. Realiza ações pós-cadastro (Clicar Proc -> Alterar -> Add Pedido)
                 pos_ok = self.realizar_acoes_pos_cadastro(dados_processo)
                 if not pos_ok:
@@ -7204,8 +7473,38 @@ class LegalOneCadastro:
                 'Nome',
             )
 
-        # 4. CPF/CNPJ: preenche com documento se disponível, senão marca 'CPF indisponível'
+        # 4. Define Pessoa Física/Jurídica antes de preencher o documento.
+        # O modal obrigatório nasce como PF, mesmo quando o contrário é uma empresa.
         documento = self._valor_limpo(documento)
+        tipo_pessoa = self._resolver_tipo_pessoa(nome_efetivo, documento, None)
+        eh_pf = tipo_pessoa == 'Pessoa Fisica'
+        tipo_id = '#naturalPerson-checkbox' if eh_pf else '#legalPerson-checkbox'
+        try:
+            tipo_selecionado = self.page.evaluate(
+                """(modal) => {
+                    const root = modal || document;
+                    const input = root.querySelector('__TIPO_ID__');
+                    if (!input) return false;
+                    if (!input.checked) input.click();
+                    return input.checked;
+                }""".replace('__TIPO_ID__', tipo_id),
+                modal_ativo,
+            )
+            if tipo_selecionado:
+                logger.info(
+                    f"   ✓ Tipo do contato no modal obrigatório: "
+                    f"{'Pessoa Física' if eh_pf else 'Pessoa Jurídica'}"
+                )
+                time.sleep(0.4)
+                modal_ativo = self._obter_modal_contato_ativo() or modal_ativo
+        except Exception as e:
+            logger.warning(f"   ⚠ Não foi possível selecionar o tipo de pessoa: {e}")
+
+        # Para PJ sem CNPJ informado, aplica a mesma busca usada no fluxo "Adicionar".
+        if not documento and not eh_pf:
+            documento = self._buscar_cnpj_web(nome_efetivo)
+
+        # 5. CPF/CNPJ: preenche com documento se disponível, senão marca como indisponível.
         doc_preenchido = False
         if documento:
             doc_preenchido = self._preencher_no_modal(
@@ -7213,13 +7512,13 @@ class LegalOneCadastro:
                 ['#input-cpf-cnpj', 'input[formcontrolname="cpfCnpj"]',
                  'input[formcontrolname="cpf"]', 'input[name="cpfCnpj"]'],
                 documento,
-                'CPF',
+                'CPF' if eh_pf else 'CNPJ',
             )
             if not doc_preenchido:
-                logger.warning("   ⚠ Não foi possível preencher CPF — marcando 'CPF indisponível'")
+                logger.warning("   ⚠ Não foi possível preencher o documento — marcando como indisponível")
 
         if not doc_preenchido:
-            # Limpa o campo CPF e marca o checkbox 'CPF não disponível'
+            # Limpa o campo CPF/CNPJ e marca o checkbox de documento indisponível.
             try:
                 marcou = self.page.evaluate(
                     """(modal) => {
@@ -7256,14 +7555,52 @@ class LegalOneCadastro:
                     modal_ativo,
                 )
                 if marcou:
-                    logger.info("   ✓ Checkbox 'CPF indisponível' marcado")
+                    logger.info("   ✓ Checkbox de documento indisponível marcado")
+                    motivo = os.getenv(
+                        'LEGALONE_MOTIVO_SEM_CPF',
+                        'Recusou-se a fornecer documentação',
+                    )
+                    motivo_preenchido = self.page.evaluate(
+                        """(modal) => {
+                            const valor = __MOTIVO__;
+                            const root = modal || document;
+                            const seletores = [
+                                'input[formcontrolname="reason"]',
+                                'input[formcontrolname="motivo"]',
+                                'input[formcontrolname="justificativa"]',
+                                'textarea[formcontrolname="reason"]',
+                                'textarea[formcontrolname="motivo"]',
+                                '#input-justification',
+                                'input[id*="reason"]',
+                                'input[id*="motivo"]',
+                            ];
+                            let campo = seletores.map(s => root.querySelector(s)).find(Boolean);
+                            if (!campo) {
+                                const rotulo = Array.from(root.querySelectorAll('label, span, p'))
+                                    .find(el => /motivo/i.test(el.textContent || ''));
+                                campo = rotulo?.parentElement?.querySelector('input, textarea')
+                                    || rotulo?.nextElementSibling?.querySelector?.('input, textarea');
+                            }
+                            if (!campo || campo.disabled) return false;
+                            const proto = campo.tagName === 'TEXTAREA'
+                                ? HTMLTextAreaElement.prototype
+                                : HTMLInputElement.prototype;
+                            Object.getOwnPropertyDescriptor(proto, 'value').set.call(campo, valor);
+                            campo.dispatchEvent(new InputEvent('input', {bubbles: true}));
+                            campo.dispatchEvent(new Event('change', {bubbles: true}));
+                            return true;
+                        }""".replace('__MOTIVO__', json.dumps(motivo)),
+                        modal_ativo,
+                    )
+                    if not motivo_preenchido:
+                        logger.warning("   ⚠ Campo Motivo não encontrado no modal obrigatório")
             except Exception as e:
-                logger.warning(f"   ⚠ Erro ao marcar CPF indisponível: {e}")
+                logger.warning(f"   ⚠ Erro ao marcar documento indisponível: {e}")
 
         # Aguarda Angular processar as mudanças
         time.sleep(0.6)
 
-        # 5. Clica em Salvar dentro do modal (escoped ao modal topmost)
+        # 6. Clica em Salvar dentro do modal (escoped ao modal topmost)
         salvo = False
         # Tentativa 1: botão scoped ao modal_ativo via JS
         try:
@@ -7597,6 +7934,9 @@ class LegalOneCadastro:
         outros = dados_processo.get('outros_dados', {}) or {}
         candidatos = [
             dados_processo.get('descricao_pedidos'),
+            dados_processo.get('pedidos'),
+            outros.get('descricao_pedidos'),
+            outros.get('pedidos'),
             outros.get('Descreva todos os pedidos com as respectivas informações: pedido, valor, probabilidade atual (êxito ou perda - possível, provável, remota)'),
             outros.get('Descreva todos os pedidos com as respectivas informações'),
             outros.get('Descreva todos os pedidos'),
@@ -7607,8 +7947,32 @@ class LegalOneCadastro:
                 candidatos.append(v)
         for c in candidatos:
             if c:
+                if isinstance(c, (list, tuple, set)):
+                    return '; '.join(str(item).strip() for item in c if str(item).strip())
                 return str(c).strip()
         return ''
+
+    @staticmethod
+    def _normalizar_data_legalone(valor) -> str | None:
+        """Retorna data válida no formato dd/mm/yyyy ou None.
+
+        Ano isolado (ex.: 2015 inferido do CNJ) não é uma data e nunca deve ser
+        lançado como Data do Pedido/Data de Julgamento.
+        """
+        texto = str(valor or '').strip()
+        if not texto or re.fullmatch(r'\d{4}', texto):
+            return None
+        texto_norm = _normalizar_pedido(texto)
+        if any(marcador in texto_norm for marcador in ('nao localizado', 'n a', 'none', 'null')):
+            return None
+
+        texto = texto.split('T', 1)[0].strip()
+        for formato in ('%d/%m/%Y', '%d-%m-%Y', '%Y-%m-%d'):
+            try:
+                return datetime.strptime(texto, formato).strftime('%d/%m/%Y')
+            except ValueError:
+                continue
+        return None
 
     def _parse_pedidos_detalhados(self, texto: str) -> list[dict]:
         if not texto:
@@ -7627,8 +7991,8 @@ class LegalOneCadastro:
             'beneficios-gratificacoes': 'Benefícios-Gratificações',
         }
         mapa_grau = {
-            'possível': 'Possível', 'possivel': 'Possível',
-            'provável': 'Provável', 'provavel': 'Provável',
+            'possível': 'Poss\u00edvel', 'possivel': 'Poss\u00edvel',
+            'provável': 'Prov\u00e1vel', 'provavel': 'Prov\u00e1vel',
             'remota': 'Remota', 'remoto': 'Remota',
         }
 
@@ -7642,16 +8006,39 @@ class LegalOneCadastro:
         linhas = re.split(r'[\n;]+', raw)
         linhas = [l.strip() for l in linhas if l.strip()]
 
+        # O Copilot pode agrupar pedidos diferentes numa única frase. Expande
+        # apenas combinações inequívocas para os nomes existentes no LegalOne.
+        linhas_expandidas = []
+        for linha in linhas:
+            linha_norm = _normalizar_pedido(linha)
+            if 'multa' in linha_norm and any(
+                marcador in linha_norm for marcador in ('467', '477', '475', 'fgts')
+            ):
+                if '477' in linha_norm:
+                    linhas_expandidas.append('Multa artigo 477 clt')
+                if '467' in linha_norm:
+                    linhas_expandidas.append('Multa artigo 467 clt')
+                if '475' in linha_norm:
+                    linhas_expandidas.append('Multa')
+                if 'fgts' in linha_norm:
+                    linhas_expandidas.append('FGTS+40%')
+            elif '13' in linha_norm and 'ferias proporcionais' in linha_norm:
+                linhas_expandidas.extend(('13º Salario Proporcional', 'Férias Proporcionais'))
+            elif 'liberacao' in linha_norm and 'guia' in linha_norm:
+                linhas_expandidas.extend(('Entrega das guias CD/SD', 'Entrega das guias TRCT'))
+            else:
+                linhas_expandidas.append(linha)
+        linhas = linhas_expandidas
+
         itens = []
         for linha in linhas:
             m_valor = re_valor.search(linha)
             m_tipo = re_tipo.search(linha)
             m_grau = re_grau.search(linha)
 
-            # Precisa ao menos valor OU (tipo+grau) pra considerar pedido válido
-            if not m_valor and not (m_tipo and m_grau):
-                continue
-
+            # Quando o Forms informa apenas a lista de pedidos, cadastra cada
+            # item com os defaults acordados: R$ 0,00, Êxito e Possível.
+            # Valores e probabilidades explícitos continuam tendo prioridade.
             valor = m_valor.group(1) if m_valor else '0,00'
             tipo_raw = (m_tipo.group(1) if m_tipo else 'êxito').lower()
             grau_raw = (m_grau.group(1) if m_grau else 'possível').lower()
@@ -7668,19 +8055,15 @@ class LegalOneCadastro:
             if not nome:
                 continue
 
-            # Aplicar sinônimos
-            nome_lower = nome.lower().strip()
-            for chave, valor_correto in mapa_sinonimos.items():
-                if chave in nome_lower or nome_lower in chave:
-                    nome = valor_correto
-                    break
+            # Alinha o texto livre do Copilot ao catálogo canônico do LegalOne.
+            nome = _resolver_pedido_catalogo(nome)
 
-            tipo_norm = 'Perda' if tipo_raw == 'perda' else 'Êxito'
+            tipo_norm = 'Perda' if tipo_raw == 'perda' else '\u00caxito'
             itens.append({
                 'pedido': nome,
                 'tipo': tipo_norm,
                 'tipo_id': '1' if tipo_norm == 'Perda' else '0',
-                'grau': mapa_grau.get(grau_raw, 'Possível'),
+                'grau': mapa_grau.get(grau_raw, 'Poss\u00edvel'),
                 'valor': valor,
             })
 
@@ -8047,17 +8430,29 @@ class LegalOneCadastro:
         4. Clica na opção correta
         5. Se não encontrar → retorna False (caller deve parar)
         """
-        # Extrair primeiras palavras para busca parcial (mínimo 3 palavras ou texto completo se curto)
-        palavras = nome_pedido.split()
-        texto_busca = ' '.join(palavras[:3]) if len(palavras) > 3 else nome_pedido
+        nome_pedido = _resolver_pedido_catalogo(nome_pedido)
+        # O lookup do LegalOne filtra sua treeTable pelo texto completo. Usar
+        # apenas as primeiras palavras deixa itens ambíguos como "Multa".
+        texto_busca = nome_pedido
 
-        inp_nome.click()
-        inp_nome.fill('')
-        inp_nome.type(texto_busca, delay=30)
+        try:
+            inp_nome.click(timeout=5000)
+            inp_nome.fill('', timeout=5000)
+            inp_nome.type(texto_busca, delay=30, timeout=5000)
+        except Exception as e:
+            logger.error(f"      ❌ Campo do pedido não respondeu em 5s: {e}")
+            return False
         time.sleep(1.0)  # Esperar dropdown carregar resultados
 
         # Tentar localizar dropdown com opções
         seletores_dropdown = [
+            # Estrutura real do LegalOne: lookup dropdown com uma tabela de árvore.
+            '.lookup-dropdown[style*="display: block"] .treeTable tbody tr.initialized',
+            '.lookup-dropdown[style*="display: block"] .treeTable tbody tr[data-val-level]',
+            '.lookup-dropdown .treeTable tbody tr.initialized',
+            '.lookup-dropdown .treeTable tbody tr[data-val-level]',
+            '[id$="_dropdown"] .treeTable tbody tr.initialized',
+            '[id$="_dropdown"] .treeTable tbody tr[data-val-level]',
             '[role="listbox"] [role="option"]',
             '.bento-combobox-container [role="option"]',
             '.bento-list [role="option"]',
@@ -8069,35 +8464,31 @@ class LegalOneCadastro:
         ]
 
         opcoes_encontradas = []
-        for sel in seletores_dropdown:
-            try:
-                opcoes = self.page.locator(sel)
-                count = opcoes.count()
-                if count > 0:
-                    for i in range(count):
-                        opt = opcoes.nth(i)
-                        try:
-                            txt = (opt.inner_text() or '').strip()
-                            if txt:
-                                opcoes_encontradas.append((opt, txt))
-                        except Exception:
-                            continue
-                    if opcoes_encontradas:
-                        break
-            except Exception:
-                continue
+        # A tabela do lookup é carregada assincronamente após a digitação.
+        # Não pressionar Enter nem aceitar o texto livre enquanto ela não aparecer.
+        for _ in range(6):
+            for sel in seletores_dropdown:
+                try:
+                    opcoes = self.page.locator(sel)
+                    count = opcoes.count()
+                    if count > 0:
+                        for i in range(count):
+                            opt = opcoes.nth(i)
+                            try:
+                                txt = (opt.inner_text() or '').strip()
+                                if txt:
+                                    opcoes_encontradas.append((opt, txt))
+                            except Exception:
+                                continue
+                        if opcoes_encontradas:
+                            break
+                except Exception:
+                    continue
+            if opcoes_encontradas:
+                break
+            time.sleep(0.5)
 
         if not opcoes_encontradas:
-            # Tentar com Enter (fallback caso dropdown não seja listbox padrão)
-            self.page.keyboard.press('Enter')
-            time.sleep(0.5)
-            # Verificar se campo ficou preenchido com valor válido
-            valor_campo = (inp_nome.input_value() or '').strip()
-            if valor_campo:
-                logger.info(f"      ℹ Dropdown auto-completou com Enter: '{valor_campo}'")
-                # Verificar se valor aceito corresponde ao pedido
-                if nome_pedido.lower()[:10] in valor_campo.lower() or valor_campo.lower() in nome_pedido.lower():
-                    return True
             logger.error(
                 f"      âŒ Pedido NÃO encontrado no dropdown: '{nome_pedido}' "
                 f"(buscou: '{texto_busca}'). Nenhuma opção disponível."
@@ -8153,6 +8544,21 @@ class LegalOneCadastro:
                 pass
 
         if not melhor_match:
+            # Última tentativa: o catálogo da interface pode ter variações que
+            # não existem no Copilot. Escolhe somente um resultado bem próximo.
+            candidatos = [
+                (self._calcular_similaridade(nome_pedido, txt), opt, txt)
+                for opt, txt in opcoes_encontradas
+            ]
+            if candidatos:
+                score, opt, txt = max(candidatos, key=lambda item: item[0])
+                if score >= 0.78:
+                    melhor_match = (opt, txt)
+                    logger.info(
+                        f"      ℹ Match aproximado do catálogo: '{nome_pedido}' → '{txt}' ({score:.0%})"
+                    )
+
+        if not melhor_match:
             nomes_disponiveis = [txt for _, txt in opcoes_encontradas[:10]]
             logger.error(
                 f"      âŒ Pedido NÃO encontrado no dropdown: '{nome_pedido}'. "
@@ -8168,7 +8574,7 @@ class LegalOneCadastro:
         opt_element, opt_texto = melhor_match
         try:
             opt_element.scroll_into_view_if_needed()
-            opt_element.click()
+            opt_element.click(timeout=5000)
             time.sleep(0.5)
             logger.info(f"      ✓ Pedido selecionado no dropdown: '{opt_texto}'")
             return True
@@ -8314,7 +8720,11 @@ class LegalOneCadastro:
             data_pedido = item.get('data_pedido', '')
             if data_pedido:
                 campos_esperados += 1
-                inp_data_ped = row.locator('input[id*="DataPedido"], input[name*="DataPedido"]').first
+                inp_data_ped = row.locator(
+                    'input[id^="Pedidos_"][id$="__DataPedido"], '
+                    'input[name^="Pedidos["][name$="].DataPedido"], '
+                    'input[id*="DataPedido"], input[name*="DataPedido"]'
+                ).first
                 if inp_data_ped.count() > 0:
                     try:
                         inp_data_ped.click()
@@ -8406,21 +8816,36 @@ class LegalOneCadastro:
         else:
             contingencia_id = ''  # Não preenche se não veio do Forms
 
-        # Data dos pedidos (dd/mm/yyyy)
-        data_pedido = str(
-            dp.get('data_distribuicao')
-            or outros.get('Data dos pedidos')
-            or outros.get('data_distribuicao')
-            or ''
-        ).strip()
+        def resolver_data(*candidatos):
+            for bruto in candidatos:
+                if bruto in (None, ''):
+                    continue
+                data_normalizada = self._normalizar_data_legalone(bruto)
+                if data_normalizada:
+                    return data_normalizada
+                logger.warning(
+                    f"   ⚠ Data inválida descartada para pedido: '{bruto}'. "
+                    "Esperado dd/mm/aaaa ou aaaa-mm-dd."
+                )
+            return ''
+
+        # Data do pedido não deve receber apenas o ano de distribuição do CNJ.
+        data_pedido = resolver_data(
+            dp.get('data_pedido'),
+            outros.get('Data dos pedidos'),
+            outros.get('data_pedido'),
+            dp.get('data_distribuicao'),
+            outros.get('Data de distribuição'),
+            outros.get('Data de distribuicao'),
+            outros.get('data_distribuicao'),
+        )
 
         # Data do julgamento (dd/mm/yyyy) - opcional
-        data_julgamento = str(
-            dp.get('data_julgamento')
-            or outros.get('Data do julgamento')
-            or outros.get('data_julgamento')
-            or ''
-        ).strip()
+        data_julgamento = resolver_data(
+            dp.get('data_julgamento'),
+            outros.get('Data do julgamento'),
+            outros.get('data_julgamento'),
+        )
 
         if contingencia_id:
             logger.info(f"   ℹ Contingência do Forms: '{contingencia_raw}' → value={contingencia_id}")
@@ -8780,8 +9205,24 @@ class LegalOneCadastro:
                 logger.error("   âŒ Nenhum pedido foi preenchido com sucesso. Abortando salvamento para não sobrescrever estado prévio.")
                 self.last_error_reason = "Nenhum pedido foi cadastrado"
                 return False
+            if total_itens > 0 and preenchidos < total_itens:
+                self.last_error_reason = (
+                    f"Cadastro incompleto: {preenchidos}/{total_itens} pedidos foram encontrados"
+                )
+                logger.error(f"   ❌ {self.last_error_reason}. Abortando salvamento.")
+                return False
             elif total_itens == 0:
                 logger.info("   ℹ Nenhum pedido para preencher.")
+
+            # 4b. Previsão e resultado ficam no formulário de edição e só
+            # são preenchidos depois que todos os pedidos foram incluídos.
+            # Se vierem na origem e não forem gravados, não salva parcialmente.
+            if not self._preencher_previsao_e_resultado(dados_processo):
+                logger.error(
+                    '   ❌ Previsão/resultado não foram preenchidos. '
+                    'Abortando salvamento para evitar dados incompletos.'
+                )
+                return False
 
             # 5. Clicar em "Salvar e fechar" (somente se houver ao menos 1 pedido preenchido, quando havia pedidos)
             if total_itens > 0 and preenchidos == 0:
@@ -8814,7 +9255,7 @@ class LegalOneCadastro:
             if not salvo:
                 logger.warning("   ⚠ Botão 'Salvar e fechar' não encontrado — tentando via JS...")
                 try:
-                    self.page.evaluate("""
+                    salvo = bool(self.page.evaluate("""
                         () => {
                             const btn = document.querySelector('button[name="ButtonSave"]')
                                 || Array.from(document.querySelectorAll('button[type="submit"]'))
@@ -8822,11 +9263,15 @@ class LegalOneCadastro:
                             if (btn) { btn.click(); return true; }
                             return false;
                         }
-                    """)
-                    logger.info("   ✓ 'Salvar e fechar' clicado via JS")
-                    salvo = True
+                    """))
+                    if salvo:
+                        logger.info("   ✓ 'Salvar e fechar' clicado via JS")
                 except Exception as e:
                     logger.error(f"   âŒ Falha ao salvar: {e}")
+
+            if not salvo:
+                self.last_error_reason = "Pedidos não foram salvos: botão Salvar e fechar indisponível"
+                return False
 
             if salvo:
                 time.sleep(3)

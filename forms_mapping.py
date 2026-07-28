@@ -764,6 +764,14 @@ def _indice_perguntas(perguntas: Iterable[dict[str, Any]]) -> dict[str, list[str
 
 
 def _buscar_por_alias(indice: dict[str, list[str]], campo: CampoForms) -> str | None:
+    # Fast-path: origem Copilot manda a chave já no formato de campo interno
+    # (ex.: "contrato_honorarios"), não a pergunta em linguagem natural do
+    # Forms. Casa direto pelo nome do campo antes de tentar os aliases.
+    valores_campo = indice.get(normalizar_texto(campo.campo))
+    if valores_campo:
+        unicos = _filtrar_valores(valores_campo, indice)
+        return unicos[0] if len(unicos) == 1 else " | ".join(unicos)
+
     candidatos = (campo.pergunta, *campo.aliases)
     candidatos_norm = []
     for candidato in candidatos:
