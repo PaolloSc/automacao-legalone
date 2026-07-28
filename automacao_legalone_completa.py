@@ -654,7 +654,8 @@ class AutomacaoLegalOne:
                     email_data,
                     {
                         **(dados_processo or {}),
-                        'erro': 'CNJ não encontrado na extração',
+                        'erro': (dados_processo or {}).get('erro_extracao')
+                                or 'CNJ não encontrado na extração',
                         'contexto': 'extracao_copilot' if eh_copilot else 'extracao_forms',
                     },
                 )

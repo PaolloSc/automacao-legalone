@@ -153,6 +153,17 @@ class OutlookMonitorGraph:
             except json.JSONDecodeError:
                 pass
 
+        # JSON com objetos aninhados (ex.: "outros_dados") e/ou texto em volta:
+        # pega do primeiro '{' ao ultimo '}'. A regex acima so casa JSON plano.
+        inicio, fim = texto.find('{'), texto.rfind('}')
+        if inicio != -1 and fim > inicio:
+            try:
+                dados = json.loads(texto[inicio:fim + 1])
+                if isinstance(dados, dict) and 'cnj' in dados:
+                    return dados
+            except (json.JSONDecodeError, ValueError):
+                pass
+
         # Tenta o texto inteiro como JSON
         try:
             dados = json.loads(texto)
