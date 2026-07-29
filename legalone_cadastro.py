@@ -3951,7 +3951,16 @@ class LegalOneCadastro:
                 # outro chrome.exe segurando o perfil -> matar antes de rodar
                 ("VISIVEL chrome (perfil principal)", self.user_data_dir, False, "chrome"),
             ] if _headed else []
-            tentativas = _topo + [
+            # LEGALONE_HEADLESS=1 poe as tentativas sem janela na frente. Sem isso a
+            # primeira tentativa e' sempre visual, mesmo com LEGALONE_HEADED vazio.
+            # ponytail: sem janela os campos bento-combobox podem nao commitar (foi o
+            # que travou a VM Linux) — usar so quando a janela incomodar de verdade.
+            _sem_janela = os.getenv("LEGALONE_HEADLESS", "").strip().lower() in ("1", "true", "sim")
+            _ordem_headless = [
+                ("perfil principal headless", self.user_data_dir, True, "chrome"),
+                ("perfil alternativo headless", self.fallback_user_data_dir, True, None),
+            ] if _sem_janela else []
+            tentativas = _topo + _ordem_headless + [
                 ("perfil principal visual", self.user_data_dir, False, "chrome"),
                 ("perfil principal headless", self.user_data_dir, True, "chrome"),
                 ("perfil alternativo visual", self.fallback_user_data_dir, False, None),
