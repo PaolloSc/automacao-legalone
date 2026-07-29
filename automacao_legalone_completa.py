@@ -9,6 +9,7 @@ import sys
 import threading
 import concurrent.futures
 import os
+import re
 import smtplib
 import traceback
 import unicodedata
@@ -310,6 +311,83 @@ class AutomacaoLegalOne:
         dados_base['outros_dados'] = outros
         return dados_base
 
+    _CNPJ_RE = re.compile(r"\b\d{2}\.?\d{3}\.?\d{3}/\d{4}-?\d{2}\b")
+
+    @staticmethod
+    def _cnpj_dv_ok(cnpj: str) -> bool:
+        """Valida os dígitos verificadores de um CNPJ."""
+        nums = [int(c) for c in re.sub(r"\D", "", cnpj)]
+        if len(nums) != 14 or len(set(nums)) == 1:
+            return False
+        for n_dig, pesos in (
+            (12, [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]),
+            (13, [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]),
+        ):
+            resto = sum(d * p for d, p in zip(nums[:n_dig], pesos)) % 11
+            if nums[n_dig] != (0 if resto < 2 else 11 - resto):
+                return False
+        return True
+
+    def _validar_cnpjs(self, dados_processo: dict) -> None:
+        """CNPJ inválido/placeholder vira warning no QA e no email de conferência (não aborta)."""
+        vistos = set()
+        # list(): o warning insere '_qa_warnings' no próprio dict durante a iteração
+        for campo, valor in list(dados_processo.items()):
+            if not isinstance(valor, str):
+                continue
+            for cnpj in self._CNPJ_RE.findall(valor):
+                if cnpj in vistos:
+                    continue
+                vistos.add(cnpj)
+                if not self._cnpj_dv_ok(cnpj):
+                    aviso = f"CNPJ INVÁLIDO em '{campo}': {cnpj} — conferir o CNPJ real e corrigir no LegalOne"
+                    dados_processo.setdefault('_qa_warnings', []).append(aviso)
+                    logger.warning(f"[QA] ⚠ {aviso}")
+                else:
+                    self._conferir_cnpj_receita(campo, valor, cnpj, dados_processo)
+
+    _STOPWORDS_RAZAO = {
+        'LTDA', 'SA', 'S.A', 'S/A', 'ME', 'EPP', 'EIRELI', 'CIA',
+        'DE', 'DO', 'DA', 'DOS', 'DAS', 'E', 'EM', 'COMERCIO', 'SERVICOS',
+    }
+
+    @classmethod
+    def _tokens_razao(cls, texto: str) -> set[str]:
+        return {
+            t for t in re.split(r"\W+", texto.upper())
+            if len(t) >= 3 and t not in cls._STOPWORDS_RAZAO and not t.isdigit()
+        }
+
+    def _conferir_cnpj_receita(self, campo: str, valor: str, cnpj: str, dados_processo: dict) -> None:
+        """Consulta o CNPJ na Receita (BrasilAPI) e alerta se não existir ou a razão social não bater."""
+        num = re.sub(r"\D", "", cnpj)
+        try:
+            resp = requests.get(f"https://brasilapi.com.br/api/cnpj/v1/{num}", timeout=15)
+        except requests.RequestException as e:
+            logger.warning(f"[QA] Receita indisponível para CNPJ {cnpj}: {e}")
+            return
+        if resp.status_code == 404:
+            aviso = f"CNPJ {cnpj} em '{campo}' NÃO consta na Receita Federal — conferir o CNPJ real"
+            dados_processo.setdefault('_qa_warnings', []).append(aviso)
+            logger.warning(f"[QA] ⚠ {aviso}")
+            return
+        if resp.status_code != 200:
+            logger.warning(f"[QA] Receita retornou {resp.status_code} para CNPJ {cnpj} — conferência pulada")
+            return
+        razao = (resp.json().get('razao_social') or '').strip()
+        if not razao:
+            return
+        # ponytail: comparação por interseção de palavras; trocar por fuzzy match se der falso alarme
+        if self._tokens_razao(razao) & self._tokens_razao(valor):
+            logger.info(f"[QA] ✅ CNPJ {cnpj} confere na Receita: {razao}")
+        else:
+            aviso = (
+                f"CNPJ {cnpj} em '{campo}' pertence a '{razao}' na Receita — "
+                f"não confere com o nome informado"
+            )
+            dados_processo.setdefault('_qa_warnings', []).append(aviso)
+            logger.warning(f"[QA] ⚠ {aviso}")
+
     def _destinatarios_erro(self) -> list[str]:
         bruto = (
             os.getenv('LEGALONE_ERROR_EMAIL_TO')
@@ -576,7 +654,8 @@ class AutomacaoLegalOne:
                     email_data,
                     {
                         **(dados_processo or {}),
-                        'erro': 'CNJ não encontrado na extração',
+                        'erro': (dados_processo or {}).get('erro_extracao')
+                                or 'CNJ não encontrado na extração',
                         'contexto': 'extracao_copilot' if eh_copilot else 'extracao_forms',
                     },
                 )
@@ -584,6 +663,9 @@ class AutomacaoLegalOne:
 
             # Mostra resumo simples
             logger.info(f"✅ Processo extraído: CNJ {dados_processo.get('cnj', 'N/A')}")
+
+            # CNPJ de teste/inválido não pode entrar silenciosamente no cadastro
+            self._validar_cnpjs(dados_processo)
 
             # --- INTELIGÊNCIA DE CLASSIFICAÇÃO (Claude Brain) ---
             tipo_tarefa = "GENERICO"
@@ -900,6 +982,7 @@ class AutomacaoLegalOne:
         dados_processo = dados_processo or {}
 
         cnj = dados_processo.get('cnj', 'N/A')
+        pasta = dados_processo.get('numero_pasta') or 'N/A'
         cliente = dados_processo.get('cliente') or dados_processo.get('autor') or 'N/A'
         contrario = dados_processo.get('contrario') or dados_processo.get('reu') or 'N/A'
         link = email_data.get('forms_link', 'N/A')
@@ -968,6 +1051,7 @@ class AutomacaoLegalOne:
 <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;">
   <tr><th align="left">Data/Hora</th><td>{timestamp}</td></tr>
   <tr><th align="left">CNJ</th><td>{cnj}</td></tr>
+  <tr><th align="left">Pasta</th><td>{pasta}</td></tr>
   <tr><th align="left">Cliente</th><td>{cliente}</td></tr>
   <tr><th align="left">Contrário</th><td>{contrario}</td></tr>
   <tr><th align="left">Forms</th><td><a href="{link}">{link}</a></td></tr>
@@ -981,7 +1065,7 @@ class AutomacaoLegalOne:
 
         texto = (
             f"Cadastro concluído - LegalOne\n\n"
-            f"Data/Hora: {timestamp}\nCNJ: {cnj}\nCliente: {cliente}\n"
+            f"Data/Hora: {timestamp}\nCNJ: {cnj}\nPasta: {pasta}\nCliente: {cliente}\n"
             f"Contrário: {contrario}\nForms: {link}\n"
             f"Pedidos: {preenchidos}/{total}\n"
             f"QA Warnings: {len(qa_warnings)}\n"
@@ -990,10 +1074,10 @@ class AutomacaoLegalOne:
 
         notificacao = {
             'cnj': cnj,
-            'subject': f"[OK CADASTRO] CNJ {cnj} — cadastro concluído",
+            'subject': f"[OK CADASTRO] Pasta {pasta} — CNJ {cnj} — cadastro concluído",
             'text': texto,
             'html': html,
-            'to': ['destinatario@exemplo.com'],
+            'to': self._destinatarios_erro(),
         }
 
         tentativas = [

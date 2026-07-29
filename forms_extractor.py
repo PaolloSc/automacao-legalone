@@ -10,6 +10,7 @@ import logging
 from datetime import datetime
 import unicodedata
 import os
+import sys
 
 try:
     from forms_mapping import mapear_formulario
@@ -83,6 +84,7 @@ class FormsExtractor:
         self._page = None
         self._forms_aberto = False  # True quando já está em "Verificar resultados individuais"
         self._forms_url_base = None  # URL base do Forms sendo monitorado
+        self.erro_extracao = None  # motivo real da ultima falha (ex.: sessao Microsoft expirada)
 
         # Inicializa Firecrawl se disponível
         self.firecrawl = None
@@ -567,7 +569,9 @@ class FormsExtractor:
                 await _reset_playwright_and_launch()
 
         # --- Cria contexto e página ---
-        context_options = {"viewport": {"width": 1400, "height": 900}}
+        # locale explicito: os seletores deste modulo sao em portugues; sem isso o Forms
+        # sobe em ingles na VM (locale en-US) e nada casa
+        context_options = {"viewport": {"width": 1400, "height": 900}, "locale": "pt-BR"}
         if os.path.exists(self.state_file):
             context_options["storage_state"] = self.state_file
             logger.info("💾 Carregando sessão salva")
@@ -635,6 +639,16 @@ class FormsExtractor:
         )
 
         if precisa_login:
+            # ponytail: sem TTY (systemd na VM) ninguem vai logar — falha rapido com o motivo real
+            # em vez de esperar 5 min e reportar "CNJ nao encontrado"
+            if not sys.stdin.isatty():
+                self.erro_extracao = (
+                    f"Sessao Microsoft ausente/expirada ({self.state_file}) e sem terminal "
+                    "para login interativo — renove o state.json e copie para a maquina que roda a automacao"
+                )
+                logger.error(f"[LOGIN] {self.erro_extracao}")
+                return False
+
             logger.warning("[LOGIN] Login necessario no Microsoft!")
             logger.info("[AGUARDE] Faca login na janela do navegador que abriu...")
             print("\n" + "="*60)
@@ -654,7 +668,8 @@ class FormsExtractor:
                     tempo_restante = 5 - (i // 12)
                     logger.info(f"[AGUARDANDO] Login... ({tempo_restante} minutos restantes)")
             else:
-                logger.error("[ERRO] Timeout aguardando login (5 minutos)")
+                self.erro_extracao = "Timeout (5 min) aguardando login manual no Microsoft Forms"
+                logger.error(f"[ERRO] {self.erro_extracao}")
                 return False
 
         await asyncio.sleep(3)
@@ -692,28 +707,58 @@ class FormsExtractor:
                     "text=Revisar respostas",
                     "button:has-text('Ver resultados')",
                     "text=Ver resultados",
-                    "[aria-label*='resultado']",
-                    "[aria-label*='result']",
                     "div:has-text('Verificar resultados individuais')",
                 ]
-                for selector in selectors_botao:
+                # ponytail: nada de [aria-label*='result'] — casava qualquer coisa na pagina
+                # e dava falso positivo, impedindo a busca no menu '...'
+                async def _chegou_nas_respostas() -> bool:
+                    """Pos-condicao real: a tela de resposta individual tem o campo Entrevistado."""
                     try:
-                        if await page.locator(selector).count() > 0:
-                            await page.locator(selector).first.click(timeout=3000)
-                            logger.info(f"[OK] Clicou em 'Verificar resultados individuais' ({selector})")
-                            await asyncio.sleep(3)
-                            break
-                    except Exception:
-                        continue
-                else:
-                    try:
-                        botao = await page.wait_for_selector(
-                            "text=Verificar resultados individuais", timeout=7000
+                        await page.wait_for_selector(
+                            'input[aria-label="Entrevistado"], input[aria-label="Respondent"]',
+                            timeout=8000,
                         )
-                        if botao:
-                            await botao.click()
-                            await asyncio.sleep(3)
+                        return True
                     except Exception:
+                        return False
+
+                async def _tentar_clicar() -> bool:
+                    for selector in selectors_botao:
+                        try:
+                            if await page.locator(selector).count() > 0:
+                                await page.locator(selector).first.click(timeout=3000)
+                                if await _chegou_nas_respostas():
+                                    logger.info(
+                                        f"[OK] Resultados individuais abertos ({selector})"
+                                    )
+                                    return True
+                                logger.info(f"[NAVEGACAO] Clique em {selector} nao abriu respostas, seguindo...")
+                        except Exception:
+                            continue
+                    return False
+
+                if not await _tentar_clicar():
+                    # UI nova (forms.cloud.microsoft): o item foi pro menu "..." (kebab).
+                    # Abre o menu e tenta de novo.
+                    logger.info("[NAVEGACAO] Botao direto ausente, abrindo menu '...' de Respostas...")
+                    seletores_kebab = [
+                        "button:has-text('Mais opções para Respostas')",
+                        "[aria-label*='Mais opções para Respostas']",
+                        "[aria-label*='Mais opções']",
+                        "[aria-label*='More options']",
+                        "button[aria-haspopup='true']",
+                    ]
+                    for sel_kebab in seletores_kebab:
+                        try:
+                            if await page.locator(sel_kebab).count() > 0:
+                                await page.locator(sel_kebab).first.click(timeout=3000)
+                                logger.info(f"[OK] Menu '...' aberto ({sel_kebab})")
+                                await asyncio.sleep(2)
+                                if await _tentar_clicar():
+                                    break
+                        except Exception:
+                            continue
+                    else:
                         logger.warning("[AVISO] Botao 'Verificar resultados individuais' nao encontrado")
         except Exception as e:
             logger.warning(f"[AVISO] Erro ao navegar para resultados individuais: {e}")
@@ -1444,8 +1489,12 @@ class FormsExtractor:
         }
 
         # === NAVEGADOR PERSISTENTE (mantem Forms aberto entre extracoes) ===
+        self.erro_extracao = None
         _forms_ok = await self._garantir_forms_aberto(forms_url, timeout)
         if not _forms_ok:
+            dados_extraidos['erro_extracao'] = (
+                self.erro_extracao or 'Falha ao abrir a pagina de respostas do Forms'
+            )
             return dados_extraidos
         page = self._page
         await self._ir_para_ultima_resposta()

@@ -75,6 +75,11 @@ class OutlookMonitorGraph:
         self.assunto_filtro = assunto_filtro
         self.remetente_filtro = remetente_filtro
         self.intervalo_checagem = intervalo_checagem
+        # Ate onde olhar para tras a cada ciclo. Era fixo em 120 min, o que perdia
+        # email em silencio quando a maquina dormia mais que isso (o PC suspende).
+        # Alargar e' seguro: a dedupe e' por ID em graph_processed_emails.json,
+        # nao por tempo — a janela so define o alcance da busca.
+        self.janela_minutos = int(os.getenv("GRAPH_JANELA_MINUTOS", "1440"))
 
         # Azure AD
         self.tenant_id = os.environ["AZURE_TENANT_ID"]
@@ -151,6 +156,17 @@ class OutlookMonitorGraph:
             try:
                 return json.loads(match.group(0))
             except json.JSONDecodeError:
+                pass
+
+        # JSON com objetos aninhados (ex.: "outros_dados") e/ou texto em volta:
+        # pega do primeiro '{' ao ultimo '}'. A regex acima so casa JSON plano.
+        inicio, fim = texto.find('{'), texto.rfind('}')
+        if inicio != -1 and fim > inicio:
+            try:
+                dados = json.loads(texto[inicio:fim + 1])
+                if isinstance(dados, dict) and 'cnj' in dados:
+                    return dados
+            except (json.JSONDecodeError, ValueError):
                 pass
 
         # Tenta o texto inteiro como JSON
@@ -290,7 +306,7 @@ class OutlookMonitorGraph:
                 hora_atual = datetime.now().strftime("%H:%M:%S")
                 logger.info(f"\n[VERIFICA] Verificando emails... [{hora_atual}]")
 
-                emails = self.buscar_novos_emails(minutos_atras=120)
+                emails = self.buscar_novos_emails(minutos_atras=self.janela_minutos)
                 for email_data in emails:
                     try:
                         logger.info(f"\n[PROCESSA] Processando: {email_data['subject']}")
