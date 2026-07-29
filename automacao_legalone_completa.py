@@ -755,8 +755,19 @@ class AutomacaoLegalOne:
                 sucesso = self.legalone.cadastrar_processo(dados_processo)
 
             if sucesso:
-                self.stats['processos_cadastrados'] += 1
-                logger.info("\n[OK] PROCESSO CADASTRADO!")
+                # Ciclo ok sem cadastro novo: o processo ja existia e nada foi mexido.
+                # Nao conta como cadastrado nem diz que cadastrou — log honesto.
+                pasta_existente = (
+                    getattr(self.legalone, '_pasta_existente', None)
+                    if getattr(self.legalone, '_ja_cadastrado_nada_a_fazer', False) else None
+                )
+                if pasta_existente:
+                    self.stats['processos_ja_cadastrados'] = (
+                        self.stats.get('processos_ja_cadastrados', 0) + 1)
+                    logger.info(f"\n[OK] JA CADASTRADO — nada a fazer (pasta: {pasta_existente})")
+                else:
+                    self.stats['processos_cadastrados'] += 1
+                    logger.info("\n[OK] PROCESSO CADASTRADO!")
                 self.salvar_log_sucesso(email_data, dados_processo)
                 try:
                     self._enviar_email_sucesso(email_data, dados_processo)
@@ -1045,9 +1056,19 @@ class AutomacaoLegalOne:
             f'<p style="color:{ped_cor};"><strong>Pedidos:</strong> {preenchidos}/{total}</p>'
         )
 
+        # Processo que ja existia nao teve cadastro: o email nao pode dizer que teve.
+        pasta_existente = (
+            getattr(self.legalone, '_pasta_existente', None)
+            if getattr(self.legalone, '_ja_cadastrado_nada_a_fazer', False) else None
+        )
+        titulo = (
+            f"ℹ️ Já cadastrado — nada a fazer ({pasta_existente})" if pasta_existente
+            else "✅ Cadastro concluído"
+        )
+
         html = f"""
 <html><body style="font-family:Arial,sans-serif;font-size:14px;">
-<h2 style="color:#0a7a28;">✅ Cadastro concluído — LegalOne</h2>
+<h2 style="color:#0a7a28;">{titulo} — LegalOne</h2>
 <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;">
   <tr><th align="left">Data/Hora</th><td>{timestamp}</td></tr>
   <tr><th align="left">CNJ</th><td>{cnj}</td></tr>
@@ -1064,7 +1085,10 @@ class AutomacaoLegalOne:
 """
 
         texto = (
-            f"Cadastro concluído - LegalOne\n\n"
+            f"{'Já cadastrado, nada a fazer' if pasta_existente else 'Cadastro concluído'}"
+            f" - LegalOne\n\n"
+            + (f"Pasta existente: {pasta_existente}\n" if pasta_existente else "")
+            +
             f"Data/Hora: {timestamp}\nCNJ: {cnj}\nPasta: {pasta}\nCliente: {cliente}\n"
             f"Contrário: {contrario}\nForms: {link}\n"
             f"Pedidos: {preenchidos}/{total}\n"
@@ -1074,7 +1098,11 @@ class AutomacaoLegalOne:
 
         notificacao = {
             'cnj': cnj,
-            'subject': f"[OK CADASTRO] Pasta {pasta} — CNJ {cnj} — cadastro concluído",
+            'subject': (
+                f"[JA CADASTRADO] CNJ {cnj} — nada a fazer ({pasta_existente})"
+                if pasta_existente
+                else f"[OK CADASTRO] Pasta {pasta} — CNJ {cnj} — cadastro concluído"
+            ),
             'text': texto,
             'html': html,
             'to': self._destinatarios_erro(),
