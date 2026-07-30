@@ -7767,9 +7767,14 @@ class LegalOneCadastro:
                 # 8. Realiza ações pós-cadastro (Clicar Proc -> Alterar -> Add Pedido)
                 pos_ok = self.realizar_acoes_pos_cadastro(dados_processo)
                 if not pos_ok:
-                    logger.error("Acoes pos-cadastro falharam (pedidos nao cadastrados)")
-                    self.last_error_reason = self.last_error_reason or "Pos-cadastro falhou (pedidos)"
-                    return False
+                    # O processo JA esta gravado — o que falhou foi reabrir a tela de
+                    # alteracao para os pedidos. Reportar isso como FALHA NO CADASTRO
+                    # mandou e-mail de erro para um processo que existia (pasta 8990,
+                    # 30/07). Quem da o veredito e' _confirmar_no_acervo.
+                    logger.warning("Acoes pos-cadastro falharam — processo salvo, pedidos pendentes")
+                    (dados_processo or {}).setdefault('_qa_warnings', []).append(
+                        'Processo salvo, mas os pedidos nao foram cadastrados — completar manualmente'
+                    )
 
             logger.info("\n✅ Fluxo de cadastro finalizado!")
             logger.info("ðŸ–¥ï¸  Navegador mantido aberto para conferência.")
