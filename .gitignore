@@ -16,10 +16,15 @@ ultimo_processo.txt
 debug_forms_dump.html
 *_dump.html
 
+# ===== Estado de runtime (nao versionar) =====
+graph_processed_emails.json*
+guardian_log.jsonl
+
 # ===== Screenshots (podem conter dados de clientes) =====
 qa_screenshots/
 guardian_screenshots/
 logs/
+debug_visaofill_*.png
 
 # ===== Python =====
 .venv/
