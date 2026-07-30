@@ -183,29 +183,28 @@ def test_payload_limpo_e_sujo_dao_o_mesmo_resultado_final():
 # advogado='Monica Pinheiro', que e' quem ASSINA a peticao pela Reclamante
 # (parte cliente), nao um responsavel interno do escritorio.
 #
-# Prove-It: este teste documenta que o codigo NAO tem nenhuma validacao
-# pra isso hoje — 'advogado' vira 'Responsavel principal' sem checagem.
-# Nao existe (ainda) lista de advogados do escritorio pra validar contra
-# (dependente da tabela advogado->area que ainda nao foi levantada), entao
-# o fix de hoje e' so no PROMPT do Copilot Studio (nao extrair advogado da
-# assinatura da peticao). Este teste falha se algum dia um guard-rail for
-# adicionado sem atualizar este comentario/expectativa.
+# 30/07: o guard-rail que faltava chegou — equipe.EQUIPE e' a lista do
+# escritorio, e o Responsavel agora e' resolvido para o e-mail (unico) antes de
+# ir ao combobox. Quem nao esta na lista vai para a busca como veio, entao a
+# assinatura de um advogado externo continua sendo problema do prompt do
+# Copilot Studio; o que mudou e' que ninguem de fora vira alguem de dentro por
+# semelhanca de sobrenome.
 # ------------------------------------------------------------------
 
-def test_advogado_da_assinatura_da_peticao_passa_sem_validacao():
-    """Documenta o gap: nada no codigo hoje distingue 'advogado' informado
-    pelo usuario de 'advogado' extraido erroneamente da assinatura de uma
-    peticao (parte externa). Fix real e' no prompt do Copilot Studio."""
+def test_advogado_do_escritorio_vira_email():
     cad = _montar_cadastro_fake()
-    payload = {**LIVIA_ITAU_LIMPO, "advogado": "Monica Pinheiro"}
-
-    cad.preencher_campos_obrigatorios(payload)
+    cad.preencher_campos_obrigatorios({**LIVIA_ITAU_LIMPO, "advogado": "Monica Pinheiro"})
 
     chamadas = dict(cad._chamadas_autocomplete)
-    assert chamadas.get("Responsável principal") == "Monica Pinheiro", (
-        "comportamento mudou — se alguem adicionou validacao de advogado, "
-        "atualize este teste pra refletir o novo comportamento esperado"
-    )
+    assert chamadas.get("Responsável principal") == "monica@carvalhofurtadoadv.com.br"
+
+
+def test_advogado_de_fora_nao_vira_ninguem_da_equipe():
+    cad = _montar_cadastro_fake()
+    cad.preencher_campos_obrigatorios({**LIVIA_ITAU_LIMPO, "advogado": "Joana Ribeiro Alves"})
+
+    chamadas = dict(cad._chamadas_autocomplete)
+    assert chamadas.get("Responsável principal") == "Joana Ribeiro Alves"
 
 
 if __name__ == "__main__":

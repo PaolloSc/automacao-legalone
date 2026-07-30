@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import unicodedata
+import equipe
 from datetime import datetime
 from urllib.parse import quote_plus
 from dotenv import load_dotenv
@@ -5891,6 +5892,18 @@ class LegalOneCadastro:
             responsavel = self._valor_limpo(responsavel)
             if not responsavel:
                 responsavel = 'Paollo Sanchez'  # Default
+            # O nome que a peticao traz nao e' o cadastrado ('Monica Pinheiro' vs
+            # 'Monica Furtado Pinheiro Chagas'); o e-mail e' unico e nao confunde
+            # Marcela/Marcello/Marcelo.
+            _pessoa = equipe.resolver(responsavel)
+            if _pessoa:
+                logger.info(f"   👤 Responsável: {responsavel!r} → {_pessoa[0]} ({_pessoa[1]})")
+                responsavel = _pessoa[1]
+            else:
+                logger.warning(
+                    f"   ⚠ Responsável {responsavel!r} nao bate com ninguem da equipe "
+                    "(ou bate com mais de um) — buscando pelo nome como veio"
+                )
             try:
                 # Busca o input pelo label exato para não confundir com 'Escritório responsável'
                 responsavel_seletor = self._encontrar_input_por_label_exato('Responsavel principal')
