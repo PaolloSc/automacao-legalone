@@ -1894,38 +1894,111 @@ class LegalOneCadastro:
         logger.info(f"      🎯 Melhor match: \"{nome_sel}\" (similaridade {melhor_score:.0%})")
         return melhor
 
+    def _combobox_commitou(self) -> bool | None:
+        """O combobox em foco aceitou a selecao? None = nao deu para saber.
+
+        Sinal confiavel: a classe 'bfm-invalid' no host. O texto do input NAO
+        serve — ele mostra o que foi digitado mesmo quando nada foi escolhido,
+        e foi por isso que o bot passou a vida logando '✓ selecionado' em campos
+        que o LegalOne recusava.
+        """
+        if not self.page:
+            return None
+        try:
+            return self.page.evaluate(
+                """
+                () => {
+                    const el = document.activeElement;
+                    const host = el && (el.closest('bento-combobox') || el.closest('.bento-select'));
+                    if (!host) return null;
+                    return !(host.classList.contains('bfm-invalid')
+                             || host.classList.contains('ng-invalid'));
+                }
+                """
+            )
+        except Exception:
+            return None
+
+    def _confirmar_row_bento(self, valor: str) -> str | None:
+        """Acha a row que casa com `valor` no dropdown aberto e confirma no teclado.
+
+        Localiza o indice em JS (sem clicar, porque clicar nao commita — ver
+        _clicar_opcao_bento_combobox) e desce com ArrowDown ate ele.
+        Devolve o texto da row confirmada, ou None se nada casou.
+        """
+        if not self.page or not valor:
+            return None
+        achado = self.page.evaluate(
+            """
+            (val) => {
+                const rows = Array.from(document.querySelectorAll(
+                    '.bento-list-row.bui-bento-combobox-container-item, ' +
+                    '.bento-list-row.bento-combobox-container-item, ' +
+                    '.bento-list-row'
+                )).filter(r => r.offsetHeight > 0);
+                const lower = (val || '').toLowerCase();
+                for (const modo of ['exact', 'partial']) {
+                    for (let i = 0; i < rows.length; i++) {
+                        const txt = (rows[i].innerText || rows[i].textContent || '').trim().toLowerCase();
+                        if (modo === 'exact' ? txt === lower : txt.includes(lower)) {
+                            return {indice: i, texto: txt};
+                        }
+                    }
+                }
+                return rows.length ? {indice: 0, texto: '__primeira__'} : null;
+            }
+            """,
+            valor,
+        )
+        if not achado:
+            return None
+        try:
+            for _ in range(int(achado['indice']) + 1):
+                self.page.keyboard.press('ArrowDown')
+                time.sleep(0.05)
+            self.page.keyboard.press('Enter')
+            time.sleep(0.6)
+        except Exception as e:
+            logger.debug(f"Erro ao confirmar row no teclado: {e}")
+            return None
+        if self._combobox_commitou() is False:
+            logger.warning("   ⚠ Combobox recusou a selecao (bfm-invalid)")
+        return achado['texto']
+
     def _clicar_opcao_bento_combobox(self, opcao: dict) -> bool:
-        """Clica numa opção do bento-combobox pelo seu ID de row."""
+        """Confirma uma opcao do bento-combobox descendo com as setas + Enter.
+
+        Clicar na row NAO commita — nem o MouseEvent sintetico nem o clique real
+        do Playwright. O componente BFM fica com 'bfm-invalid' e o LegalOne trata
+        o campo como vazio, deixando o Salvar desabilitado. Medido em 30/07 no
+        mesmo campo e valor (ver scripts/dump_combobox.py):
+
+            dispatchEvent  -> ng-invalid, bfm-invalid
+            clique real    -> ng-invalid, bfm-invalid
+            setas + Enter  -> ng-valid, ng-touched, ng-dirty
+
+        O indice vem da escolha feita antes (fuzzy match / desempate de
+        homonimos), entao descer 'index + 1' vezes preserva essa decisao.
+        """
         if not self.page or not opcao:
             return False
-        row_id = opcao.get('id', '')
+        idx = int(opcao.get('index') or 0)
         try:
-            if row_id:
-                row = self.page.wait_for_selector(f'#{row_id}', state='visible', timeout=3000)
-                if row:
-                    row.click()
-                    time.sleep(0.8)
-                    return True
-            # Fallback: clica pelo índice
-            idx = opcao.get('index', 0)
-            clicou = self.page.evaluate(
-                """
-                (idx) => {
-                    const rows = document.querySelectorAll(
-                        '.bento-list-row.bui-bento-combobox-container-item, ' +
-                        '.bento-list-row.bento-combobox-container-item'
-                    );
-                    if (rows[idx]) { rows[idx].click(); return true; }
-                    return false;
-                }
-                """,
-                idx,
-            )
-            if clicou:
-                time.sleep(0.8)
-            return bool(clicou)
+            for _ in range(idx + 1):
+                self.page.keyboard.press('ArrowDown')
+                time.sleep(0.05)
+            self.page.keyboard.press('Enter')
+            time.sleep(0.8)
+
+            commitou = self._combobox_commitou()
+            if commitou is False:
+                logger.warning(
+                    "   ⚠ Combobox recusou a selecao (bfm-invalid) — o LegalOne vai "
+                    "tratar este campo como vazio"
+                )
+            return True
         except Exception as e:
-            logger.debug(f"Erro ao clicar opção combobox: {e}")
+            logger.debug(f"Erro ao confirmar opção combobox: {e}")
             return False
 
     def _preencher_natureza_bento(self, valor: str) -> bool:
@@ -1951,40 +2024,12 @@ class LegalOneCadastro:
         )
 
         def _clicar_row_visivel(pagina) -> str | None:
-            """Tenta clicar na row correspondente ao valor; retorna texto ou None."""
-            return pagina.evaluate(
-                """
-                (val) => {
-                    const rows = document.querySelectorAll(
-                        '.bento-list-row.bui-bento-combobox-container-item, ' +
-                        '.bento-list-row.bento-combobox-container-item, ' +
-                        '.bento-list-row'
-                    );
-                    const lower = val.toLowerCase();
-                    for (const pass_ of ['exact', 'partial']) {
-                        for (const row of rows) {
-                            if (row.offsetHeight === 0) continue;
-                            const txt = (row.innerText || row.textContent || '').trim().toLowerCase();
-                            if (pass_ === 'exact' ? txt === lower : txt.includes(lower)) {
-                                row.dispatchEvent(new MouseEvent('mousedown', {bubbles: true}));
-                                row.dispatchEvent(new MouseEvent('click',     {bubbles: true}));
-                                return txt;
-                            }
-                        }
-                    }
-                    // Fallback: primeira row visível
-                    for (const row of rows) {
-                        if (row.offsetHeight > 0) {
-                            row.dispatchEvent(new MouseEvent('mousedown', {bubbles: true}));
-                            row.dispatchEvent(new MouseEvent('click',     {bubbles: true}));
-                            return '__first__';
-                        }
-                    }
-                    return null;
-                }
-                """,
-                valor_lower,
-            )
+            """Confirma a row correspondente ao valor; retorna o texto ou None.
+
+            Nao clica: o clique na row nao commita no bento-combobox (ver
+            _clicar_opcao_bento_combobox). Delega para o confirmador de teclado.
+            """
+            return self._confirmar_row_bento(valor_lower)
 
         try:
             # Scroll para garantir visibilidade
@@ -2242,29 +2287,9 @@ class LegalOneCadastro:
             except Exception:
                 pass
 
-            clicou = self.page.evaluate(
-                """(val) => {
-                    const rows = document.querySelectorAll(
-                        '.bento-list-row.bui-bento-combobox-container-item, '
-                        + '.bento-list-row.bento-combobox-container-item, '
-                        + '.bento-list-row'
-                    );
-                    const lower = val.toLowerCase();
-                    for (const pass_ of ['exact', 'partial']) {
-                        for (const row of rows) {
-                            if (row.offsetHeight === 0) continue;
-                            const txt = (row.innerText || '').trim().toLowerCase();
-                            if (pass_ === 'exact' ? txt === lower : txt.includes(lower)) {
-                                row.dispatchEvent(new MouseEvent('mousedown', {bubbles: true}));
-                                row.dispatchEvent(new MouseEvent('click',     {bubbles: true}));
-                                return txt;
-                            }
-                        }
-                    }
-                    return null;
-                }""",
-                valor_lower,
-            )
+            # Confirma no teclado: clicar na row nao commita no bento-combobox
+            # (ver _clicar_opcao_bento_combobox).
+            clicou = self._confirmar_row_bento(valor_lower)
             if clicou:
                 time.sleep(0.4)
                 logger.info(f"   ✓ Status selecionado (bento-combobox): {clicou}")
@@ -5659,6 +5684,9 @@ class LegalOneCadastro:
                     'Responsavel principal',
                     'Advogado responsável',
                     'Advogado responsavel',
+                    # O Copilot manda a chave como 'advogado' dentro de outros_dados;
+                    # sem esse alias caia-se no default e o responsavel saia errado.
+                    'Advogado',
                 )
             )
             responsavel = self._valor_limpo(responsavel)
