@@ -2404,17 +2404,10 @@ class LegalOneCadastro:
         txt = re.sub(r"\s+", " ", str(texto or "")).strip().lower()
         if not txt:
             return False
-        return (
-            # O LegalOne pode entregar "órgão" com codificação corrompida
-            # ("�rg�o") no texto do combobox. "capturado no" é a parte
-            # estável e exclusiva do aviso que exige criação manual.
-            "capturado no" in txt
-            or
-            "capturado no órgão" in txt
-            or "capturado no orgao" in txt
-            or "foi capturado no órgão" in txt
-            or "foi capturado no orgao" in txt
-        )
+        # O LegalOne as vezes entrega "órgão" com codificação corrompida no
+        # texto do combobox, então casa só por "capturado no", que é a parte
+        # estável e exclusiva do aviso que exige criação manual.
+        return "capturado no" in txt
 
     def _opcao_exige_adicao_manual(self, opcao: dict | None) -> bool:
         """Detecta se a opção do combobox exige criar contato manualmente."""
