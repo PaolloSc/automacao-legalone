@@ -114,6 +114,25 @@ def _pagina_morta(e: Exception) -> bool:
     return 'has been closed' in msg or 'Target closed' in msg or 'Browser closed' in msg
 
 
+ORIGENS_DA_BASE = ('existente na base', 'existente', 'interno', 'legalone',
+                   'legal one', 'cadastro')
+
+
+def _prioridade_origem(opcao: dict) -> int:
+    """0 = contato da base, 1 = origem desconhecida, 2 = capturado no orgao.
+
+    Contato capturado no orgao nao tem documento e exige adicao manual: so deve
+    ser escolhido quando nao existe nenhum equivalente na base.
+    """
+    origem = unicodedata.normalize('NFKD', str((opcao or {}).get('origem') or ''))
+    origem = origem.encode('ascii', 'ignore').decode().strip().lower()
+    if any(p in origem for p in ORIGENS_DA_BASE):
+        return 0
+    if 'capturado' in origem:
+        return 2
+    return 1
+
+
 def _campo_exige_match_forte(nome_campo: str) -> bool:
     """Campos de catalogo onde escolher 'o mais parecido' e' pior que nao preencher.
 
@@ -1822,8 +1841,11 @@ class LegalOneCadastro:
             logger.info(f"      ⚠ Nenhuma opção com similaridade >= {limiar:.0%} para \"{valor_desejado}\"")
             return None
 
-        # Ordena por score decrescente
-        candidatos.sort(key=lambda x: x[1], reverse=True)
+        # Ordena por origem primeiro, score depois. Score puro elegia a linha
+        # 'Capturado no orgao' — que exige adicao manual e nao tem CNPJ — quando ela
+        # vinha 2 pontos a frente por acaso de acentuacao (30/07: 'Itau Unibanco S.A'
+        # capturado 85% ganhou de 'Itau Unibanco S.A.' da base, 83%, com CNPJ).
+        candidatos.sort(key=lambda x: (_prioridade_origem(x[0]), -x[1]))
 
         # --- Fase 2: detecção de homônimos ---
         melhor_score = candidatos[0][1]
