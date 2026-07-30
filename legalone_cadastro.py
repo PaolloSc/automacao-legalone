@@ -5062,10 +5062,20 @@ class LegalOneCadastro:
                     if not opcoes:
                         continue
 
+                    # Le todos os textos numa ida so ao browser. inner_text() elemento
+                    # a elemento e' um round-trip CDP cada: com 116 opcoes vezes 7
+                    # seletores, o campo Datacloud ficou 3 min parado aqui (30/07).
+                    textos = self.page.evaluate(
+                        "(sel) => Array.from(document.querySelectorAll(sel))"
+                        ".map(e => (e.innerText || '').trim())",
+                        seletor_opcao,
+                    )
+                    if len(textos) != len(opcoes):  # DOM mudou no meio: nao arrisca
+                        continue
+
                     # Para valores curtos (Sim/Não): prioriza match EXATO antes de fuzzy
                     if _valor_curto:
-                        for opcao in opcoes:
-                            texto_opcao = opcao.inner_text().strip()
+                        for opcao, texto_opcao in zip(opcoes, textos):
                             if texto_opcao.lower() == valor.lower():
                                 opcao.click()
                                 logger.info(f"   ✓ {nome_campo} selecionado (match exato): {texto_opcao}")
@@ -5075,8 +5085,7 @@ class LegalOneCadastro:
                     # Procura match por similaridade
                     melhor_el = None
                     melhor_score = 0.0
-                    for opcao in opcoes:
-                        texto_opcao = opcao.inner_text().strip()
+                    for opcao, texto_opcao in zip(opcoes, textos):
                         score = self._calcular_similaridade(valor, texto_opcao)
                         # Também aceita "contém"
                         if valor.lower() in texto_opcao.lower() or texto_opcao.lower() in valor.lower():
