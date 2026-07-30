@@ -133,6 +133,12 @@ def _prioridade_origem(opcao: dict) -> int:
     return 1
 
 
+def _eh_matriz(opcao: dict) -> bool:
+    """CNPJ de matriz: o bloco de ordem e' 0001 (ex.: 60.701.190/0001-04)."""
+    doc = re.sub(r'\D', '', str((opcao or {}).get('cpf_cnpj') or ''))
+    return len(doc) == 14 and doc[8:12] == '0001'
+
+
 def _campo_exige_match_forte(nome_campo: str) -> bool:
     """Campos de catalogo onde escolher 'o mais parecido' e' pior que nao preencher.
 
@@ -1845,7 +1851,10 @@ class LegalOneCadastro:
         # 'Capturado no orgao' — que exige adicao manual e nao tem CNPJ — quando ela
         # vinha 2 pontos a frente por acaso de acentuacao (30/07: 'Itau Unibanco S.A'
         # capturado 85% ganhou de 'Itau Unibanco S.A.' da base, 83%, com CNPJ).
-        candidatos.sort(key=lambda x: (_prioridade_origem(x[0]), -x[1]))
+        # Ultimo criterio: entre filiais de mesmo nome e mesmo score (Itau tem 4),
+        # a matriz e' a escolha previsivel quando os dados nao trazem CNPJ.
+        candidatos.sort(key=lambda x: (_prioridade_origem(x[0]), -x[1],
+                                       0 if _eh_matriz(x[0]) else 1))
 
         # --- Fase 2: detecção de homônimos ---
         melhor_score = candidatos[0][1]
