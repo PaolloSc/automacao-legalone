@@ -16,6 +16,7 @@ import tempfile
 import unicodedata
 import equipe
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import quote_plus
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
@@ -2055,6 +2056,40 @@ class LegalOneCadastro:
             {'index': achado['indice'], 'nome': achado['texto']}
         )
         return achado['texto'] if confirmou else None
+
+    def _espionar_requests(self) -> None:
+        """Anota os POSTs que o proprio LegalOne faz, para saber se da' para
+        cadastrar por HTTP em vez de pelo formulario (como o dejt_headless).
+
+        So grava metodo/URL/corpo; Cookie e Authorization saem redigidos — o
+        arquivo e' um mapa do formato, nao um cofre de credencial.
+        """
+        if not self.context or os.getenv('LEGALONE_ESPIAR', '1') != '1':
+            return
+        destino = Path(__file__).parent / 'docs' / 'varredura' / 'requests_legalone.jsonl'
+        destino.parent.mkdir(parents=True, exist_ok=True)
+
+        def _anotar(req):
+            try:
+                if req.method not in ('POST', 'PUT', 'PATCH'):
+                    return
+                if 'legalone.com.br' not in req.url:
+                    return
+                cab = {k: ('<redigido>' if k.lower() in ('cookie', 'authorization') else v)
+                       for k, v in req.headers.items()}
+                linha = {'quando': datetime.now().isoformat(timespec='seconds'),
+                         'metodo': req.method, 'url': req.url, 'headers': cab,
+                         'corpo': (req.post_data or '')[:20000]}
+                with destino.open('a', encoding='utf-8') as fh:
+                    fh.write(json.dumps(linha, ensure_ascii=False) + '\n')
+            except Exception:
+                pass  # espiao nunca derruba o cadastro
+
+        try:
+            self.context.on('request', _anotar)
+            logger.info(f"   🕵 Gravando POSTs do LegalOne em {destino}")
+        except Exception as e:
+            logger.debug(f"Nao consegui espionar requests: {e}")
 
     def _campo_confere_com(self, esperado: str) -> bool:
         """O input em foco esta com o valor esperado? Compara sem acento/caixa."""
@@ -4210,6 +4245,8 @@ class LegalOneCadastro:
                 self.context.set_default_timeout(tmo)
             except Exception:
                 pass
+
+            self._espionar_requests()
 
             # Tenta acessar URL simplificada para validar sessão
             logger.info("ðŸ” Acessando LegalOne...")
