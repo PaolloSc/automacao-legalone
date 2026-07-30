@@ -6113,6 +6113,8 @@ class LegalOneCadastro:
             data_baixa = (
                 dados.get('data_baixa')
                 or self._obter_outro_dado(dados, 'Data da baixa', 'Data de baixa', 'Baixa')
+                # ponytail: default global; vira campo por processo quando o Copilot extrair a data
+                or os.getenv('LEGALONE_DATA_BAIXA', '')
             )
             data_baixa = self._valor_limpo(data_baixa)
             if data_baixa:
