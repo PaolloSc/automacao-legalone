@@ -15,6 +15,7 @@ processos_erro.log
 ultimo_processo.txt
 debug_forms_dump.html
 *_dump.html
+docs/varredura/
 
 # ===== Estado de runtime (nao versionar) =====
 graph_processed_emails.json*
