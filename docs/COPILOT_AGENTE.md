@@ -61,39 +61,46 @@ CADASTRO INICIAL, DECISOES, RECURSO, ARQUIVAMENTO COMPLETO, ARQUIVAMENTO SIMPLES
 
 ## Campos Comuns (todos os tipos)
 tipo_cadastro, cnj, cliente, contrario, instancia (1a/2a/TST), fase,
-contingencia, probabilidade, grau_probabilidade, risco, advogado,
-procedimento, cidade_comarca, valor_causa, objetos, data_distribuicao,
-pedidos, descricao_pedidos, posicao
+contingencia, probabilidade, grau_probabilidade, risco,
+contrato_honorarios, incluir_relatorio, funcao_rcte, outros_envolvidos,
+advogado, procedimento, cidade_comarca, valor_causa, objetos,
+data_distribuicao, pedidos, vinculo_trabalhista, descricao_pedidos,
+responsabilidade, data_julgamento, data_citacao, redirecionamento, posicao
 
 ## Campos por Tipo
-(espelha forms_mapping.py — ver MAPEAMENTO_POR_TIPO)
+(espelha `pacote_automacao_legalone/forms_mapping.py` — ver `MAPEAMENTO_POR_TIPO`)
 
 ### CADASTRO INICIAL
-+ funcao_rcte, vinculo_trabalhista, responsabilidade, data_citacao,
-  contrato_honorarios, incluir_relatorio, outros_envolvidos,
-  datacloud_configurado, observacoes
+Sem campos extras — usa somente os Campos Comuns acima
+(`CADASTRO_INICIAL_FIELDS` está vazio no mapping; estrutura reservada
+para perguntas finais ainda não definidas).
++ resultado (somente se já houver decisão/acordo): tipo_resultado, resultado,
+  motivo_resultado, data_resultado
 
 ### DECISOES
 + situacao_pedido, valor_total_deferido, valor_deferido_por_pedido,
-  terceirizacao, pejotizacao, motivo, valor_acordo_condenacao,
-  valor_honorarios, valor_custas, custas, tipo_resultado, resultado,
-  motivo_resultado, data_resultado, data_sentenca,
-  cobranca_honorarios_sucumbenciais, justificativa_nao_cobranca,
-  cobranca_honorarios_contratuais_exito, houve_interposicao_recurso,
-  parte_recorrente
+  terceirizacao_1, terceirizacao_2, pejotizacao, motivo,
+  valor_acordo_condenacao, valor_honorarios, valor_custas, custas,
+  tipo_resultado, resultado, motivo_resultado, data_resultado, data_sentenca,
+  cobranca_honorarios_sucumbenciais,
+  justificativa_nao_cobranca_honorarios_sucumbenciais,
+  cobranca_honorarios_contratuais_exito,
+  justificativa_nao_cobranca_honorarios_contratuais,
+  houve_interposicao_recurso, parte_recorrente
 
 ### RECURSO
-+ data_distribuicao_recurso, tipo_classe_recurso, orgao, uf, cidade,
-  comarca, numero_turma, objetos_recurso, classificacao_pedidos_recurso,
-  datacloud_configurado, observacoes
++ posicao, data_distribuicao, tipo_classe_recurso, orgao, uf, cidade,
+  comarca, numero_turma, objetos_recurso, valor_causa,
+  classificacao_pedidos_recurso, datacloud_configurado, observacoes
 
 ### ARQUIVAMENTO COMPLETO
 + situacao_pedido, valor_deferido_por_pedido, motivo,
   valor_acordo_condenacao, valor_honorarios, custas, valor_custas,
   tipo_resultado, resultado, motivo_resultado, data_resultado,
   data_sentenca, data_arquivamento, cobranca_honorarios_sucumbenciais,
-  justificativa_nao_cobranca, cobranca_honorarios_contratuais_exito,
-  comentario_adicional
+  justificativa_nao_cobranca_honorarios_sucumbenciais,
+  cobranca_honorarios_contratuais_exito,
+  justificativa_nao_cobranca_honorarios_contratuais, comentario_adicional
 
 ### ARQUIVAMENTO SIMPLES
 + data_arquivamento, honorarios_favor_escritorio,
@@ -113,6 +120,51 @@ pedidos, descricao_pedidos, posicao
 - Campos Sim/Nao (`datacloud_configurado`, `incluir_relatorio`,
   `contrato_honorarios`): responda literalmente "Sim" ou "Nao".
   Nao use "NAO LOCALIZADO" nesses campos — na duvida, "Nao".
+- Para a previsão, envie os quatro campos separadamente:
+  `contingencia` = Ativa/Passiva; `probabilidade` = Êxito/Perda;
+  `grau_probabilidade` = Provável/Possível/Remota; `risco` = Alto/Médio/Baixo.
+  Não troque `probabilidade` por `grau_probabilidade`: o LegalOne possui
+  campos distintos para ambos.
+- Para determinar `contingencia`, use a lógica jurídica do tipo de peça,
+  não só o rótulo solto de `posicao`:
+  - Se a peça é uma **Contestação, Defesa, resposta a uma ação/execução já
+    em curso, Embargos à Execução (movidos pelo executado) ou recurso do
+    réu**: o cliente está se defendendo → `contingencia` = **Passiva**
+    (cliente é Réu/Reclamado/Executado/Embargado).
+  - Se a peça é uma **Petição Inicial, Reclamação Trabalhista, Execução,
+    Cumprimento de Sentença** ou qualquer peça em que o cliente está
+    cobrando/exigindo algo: o cliente iniciou a ação → `contingencia` =
+    **Ativa** (cliente é Autor/Reclamante/Exequente/Requerente).
+  - Regra prática: quem **protocola respondendo** a uma ação alheia está
+    no polo passivo; quem **protocola cobrando ou dando início** está no
+    polo ativo.
+  - Se a petição informar `posicao` explicitamente (Reclamante/Reclamado,
+    Autor/Réu, Exequente/Executado), esse dado tem prioridade sobre a
+    inferência pelo tipo de peça.
+- Para CADASTRO INICIAL, só envie `tipo_resultado`, `resultado`,
+  `motivo_resultado` e `data_resultado` se a petição ou os documentos já
+  informarem uma decisão, sentença ou acordo. Caso contrário, use
+  "NAO LOCALIZADO".
+- `advogado` é o **responsável interno do escritório Carvalho & Furtado**
+  pelo caso — NUNCA o advogado que assina a petição (esse é da parte
+  cliente ou contrária, externo ao escritório, e nunca deve virar
+  "Responsável principal" no LegalOne). Só preencha `advogado` se o
+  próprio usuário informar explicitamente quem do escritório é
+  responsável; caso contrário, "NAO LOCALIZADO".
+  ERRADO (achado real 2026-07-27): petição assinada por "Monica Pinheiro
+  — Advogada da Reclamante" → `advogado` = "Monica Pinheiro".
+  CERTO: `advogado` = "NAO LOCALIZADO" (a menos que o usuário diga quem
+  do escritório vai responder pelo caso).
+- `vinculo_trabalhista` pergunta especificamente "**Há PEDIDO de
+  reconhecimento de vínculo trabalhista?**" (ex.: terceirização ilícita,
+  PJ mascarando CLT) — não "a pessoa é/foi empregada". Se a petição for
+  de alguém já reconhecidamente empregado (sem disputa sobre a existência
+  do vínculo), a resposta é "Não". Aceita apenas "Não" ou "Outra" — nunca
+  invente um valor fora dessas duas opções.
+  ERRADO (achado real 2026-07-27): reclamação trabalhista comum de
+  bancária → `vinculo_trabalhista` = "Sim (empregada bancaria)".
+  CERTO: `vinculo_trabalhista` = "Não" (não há pedido de reconhecimento
+  de vínculo nessa ação — o vínculo já é incontroverso).
 
 ## Formato de Saída
 Liste campos extraídos com valores. Se não encontrou, "NAO LOCALIZADO"
@@ -259,12 +311,19 @@ Manter nomes de campo idênticos ao mapping para auto-detecção via `_buscar_po
 
 ### Campos extras perdidos
 - Bot move campos não-base para `outros_dados` automaticamente
-- `forms_mapping.py` busca via aliases — verificar se nome do campo
-  no Copilot bate com algum alias em `COMMON_FIELDS` ou tipo específico
+- `forms_mapping.py` tem fast-path: casa primeiro pelo nome interno do
+  campo (ex.: `contrato_honorarios`), sem precisar de alias — é o caminho
+  usado pelos dados do Copilot. Só cai nos aliases em texto natural
+  (`"5.honorários em favor do escritório?"`) quando a origem é o Forms.
+  Se um campo sumir, confirme que o nome enviado pelo Copilot é
+  exatamente igual ao `campo=` do `CampoForms` correspondente.
 
 ## Arquivos Relacionados
 
 - `pacote_automacao_legalone/outlook_monitor_graph.py` — recebe emails
 - `pacote_automacao_legalone/automacao_legalone_completa.py` — processa
-- `forms_mapping.py` (raiz) — referência de campos por tipo
+- `pacote_automacao_legalone/forms_mapping.py` — referência de campos por
+  tipo (a versão que o pipeline realmente importa via `forms_extractor.py`;
+  `forms_mapping.py`/`forms_mapping_copia.py` na raiz do repo são cópias
+  antigas, não usadas em produção)
 - `Implementacao_Copilot_LegalOne.pdf` (raiz) — spec original
