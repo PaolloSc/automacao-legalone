@@ -2037,6 +2037,45 @@ class LegalOneCadastro:
         )
         return achado['texto'] if confirmou else None
 
+    def _campo_confere_com(self, esperado: str) -> bool:
+        """O input em foco esta com o valor esperado? Compara sem acento/caixa."""
+        if not self.page or not esperado:
+            return True
+        try:
+            atual = self.page.evaluate(
+                """() => {
+                    const el = document.activeElement;
+                    const host = el && (el.closest('bento-combobox') || el.closest('.bento-select'));
+                    const inp = host ? host.querySelector('input') : el;
+                    return inp ? (inp.value || '') : '';
+                }"""
+            )
+        except Exception:
+            return True  # nao deu para ler: nao inventa falha
+
+        def _n(t):
+            t = unicodedata.normalize('NFKD', str(t or '')).encode('ascii', 'ignore').decode()
+            return re.sub(r'[^a-z0-9]+', ' ', t.lower()).strip()
+
+        atual_n, esperado_n = _n(atual), _n(esperado)
+        if not atual_n:
+            return False
+        # Basta uma conter a outra: o grid mostra 'Nome | Doc | Origem' e o campo
+        # fica so com o nome.
+        return atual_n in esperado_n or esperado_n in atual_n
+
+    def _limpar_campo_focado(self) -> None:
+        """Esvazia o combobox em foco, para o Salvar barrar em vez de gravar errado."""
+        if not self.page:
+            return
+        try:
+            self.page.keyboard.press('Control+a')
+            self.page.keyboard.press('Delete')
+            self.page.keyboard.press('Escape')
+            time.sleep(0.3)
+        except Exception as e:
+            logger.debug(f"Nao consegui limpar o campo: {e}")
+
     def _clicar_opcao_bento_combobox(self, opcao: dict) -> bool:
         """Confirma uma opcao do bento-combobox descendo com as setas + Enter.
 
@@ -2095,6 +2134,18 @@ class LegalOneCadastro:
                     "   ⚠ Combobox recusou a selecao (bfm-invalid) — o LegalOne vai "
                     "tratar este campo como vazio"
                 )
+                return False
+
+            # Pos-condicao: o campo tem que estar com a opcao PRETENDIDA. Sem isso o
+            # bot aceitava qualquer selecao valida — em 30/07 o Contrario Principal
+            # ficou 'Augusto Nasser Borges', pessoa sem relacao com o processo, porque
+            # a navegacao por teclado continuou sobre uma lista ja trocada.
+            if alvo and not self._campo_confere_com(alvo):
+                logger.warning(
+                    f"   ⚠ Campo ficou com valor diferente do pretendido ({alvo!r}) — "
+                    "limpando para nao gravar parte errada"
+                )
+                self._limpar_campo_focado()
                 return False
             return True
         except Exception as e:
