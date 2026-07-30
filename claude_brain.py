@@ -124,6 +124,12 @@ def _oauth_browser_login() -> dict:
     Returns:
         dict com access_token, refresh_token, expires_in
     """
+    import sys
+    if not sys.stdin.isatty():
+        # Servidor headless (systemd): não há como abrir navegador nem receber callback
+        raise RuntimeError(
+            "Login OAuth interativo indisponível (sem TTY) — defina ANTHROPIC_API_KEY no .env"
+        )
     verifier, challenge = _generate_pkce()
     state = secrets.token_urlsafe(32)
 
@@ -213,6 +219,33 @@ class ClaudeBrain:
         self.max_tokens = max_tokens
         self.temperature = temperature
 
+        self._api_url = ANTHROPIC_API_URL
+
+        # DeepSeek como cérebro — endpoint Anthropic-compatible (api-docs.deepseek.com)
+        self._deepseek_key = os.getenv("DEEPSEEK_API_KEY", "")
+        if self._deepseek_key:
+            self.model = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
+            self._api_url = "https://api.deepseek.com/anthropic/v1/messages"
+            self._api_key = self._deepseek_key
+            self._auth_path = None
+            self._access_token = ""
+            self._refresh_token = ""
+            self._expires = 0
+            logger.info(f"[CLAUDE BRAIN] Usando DeepSeek (DEEPSEEK_API_KEY) — modelo: {self.model}")
+            return
+
+        # ANTHROPIC_API_KEY dispensa OAuth (essencial em servidor headless,
+        # onde o refresh token compartilhado com outra máquina é revogado)
+        self._api_key = os.getenv("ANTHROPIC_API_KEY", "")
+        if self._api_key:
+            self._auth_path = None
+            self._access_token = ""
+            self._refresh_token = ""
+            self._expires = 0
+            logger.info("[CLAUDE BRAIN] Usando ANTHROPIC_API_KEY (sem OAuth).")
+            logger.info(f"[CLAUDE BRAIN] Inicializado — modelo: {self.model}")
+            return
+
         # Tenta encontrar auth.json existente
         path = Path(auth_path) if auth_path else _find_auth_file()
 
@@ -286,6 +319,8 @@ class ClaudeBrain:
 
     def _refresh_access_token(self):
         """Renova access token via refresh token. Se falhar, tenta re-login via navegador."""
+        if self._api_key:
+            return
         logger.info("[CLAUDE BRAIN] Renovando access token...")
         try:
             resp = requests.post(
@@ -319,6 +354,12 @@ class ClaudeBrain:
         self._save_tokens()
 
     def _get_headers(self) -> dict:
+        if self._api_key:
+            return {
+                "x-api-key": self._api_key,
+                "anthropic-version": ANTHROPIC_API_VERSION,
+                "Content-Type": "application/json",
+            }
         if self._is_expired():
             self._refresh_access_token()
         return {
@@ -335,8 +376,11 @@ class ClaudeBrain:
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
     ) -> dict:
+        modelo = model or self.model
+        if self._deepseek_key and not modelo.startswith("deepseek"):
+            modelo = self.model
         payload = {
-            "model": model or self.model,
+            "model": modelo,
             "max_tokens": max_tokens or self.max_tokens,
             "temperature": temperature if temperature is not None else self.temperature,
             "messages": messages,
@@ -348,7 +392,7 @@ class ClaudeBrain:
 
         try:
             resp = requests.post(
-                ANTHROPIC_API_URL, json=payload, headers=headers, timeout=120,
+                self._api_url, json=payload, headers=headers, timeout=120,
             )
 
             if resp.status_code == 401:
@@ -356,7 +400,7 @@ class ClaudeBrain:
                 self._refresh_access_token()
                 headers = self._get_headers()
                 resp = requests.post(
-                    ANTHROPIC_API_URL, json=payload, headers=headers, timeout=120,
+                    self._api_url, json=payload, headers=headers, timeout=120,
                 )
 
             if resp.status_code == 429:
@@ -371,7 +415,7 @@ class ClaudeBrain:
                     )
                     time.sleep(retry_after)
                     resp = requests.post(
-                        ANTHROPIC_API_URL, json=payload, headers=self._get_headers(), timeout=120,
+                        self._api_url, json=payload, headers=self._get_headers(), timeout=120,
                     )
                     if resp.status_code != 429:
                         break
