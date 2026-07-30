@@ -114,6 +114,22 @@ def _pagina_morta(e: Exception) -> bool:
     return 'has been closed' in msg or 'Target closed' in msg or 'Browser closed' in msg
 
 
+def _campo_exige_match_forte(nome_campo: str) -> bool:
+    """Campos de catalogo onde escolher 'o mais parecido' e' pior que nao preencher.
+
+    Em 30/07 o valor pedido era 'Pro bono' — que nao existe na lista de contratos
+    do escritorio — e o fuzzy de 45% casou com 'Proveito Economico...', gravando
+    'Hon - 0000002/002' no processo. Nesses campos exigimos match exato/contido.
+    """
+    n = unicodedata.normalize('NFKD', (nome_campo or '')).encode('ascii', 'ignore').decode().lower()
+    # Aceita rotulo em portugues (producao) e formcontrolname em ingles (testes,
+    # e chamadas que passam o nome do controle em vez do label).
+    return any(t in n for t in (
+        'honorario', 'negociacao', 'centro de custo', 'contrato',
+        'negotiation', 'contract', 'costcenter', 'cost center',
+    ))
+
+
 def eh_cadastro_inicial(dados_processo: dict) -> bool:
     """True quando o pedido e' um cadastro inicial (e nao decisao/recurso/pedidos).
 
@@ -1952,18 +1968,14 @@ class LegalOneCadastro:
         )
         if not achado:
             return None
-        try:
-            for _ in range(int(achado['indice']) + 1):
-                self.page.keyboard.press('ArrowDown')
-                time.sleep(0.05)
-            self.page.keyboard.press('Enter')
-            time.sleep(0.6)
-        except Exception as e:
-            logger.debug(f"Erro ao confirmar row no teclado: {e}")
+        if achado['texto'] == '__primeira__':
+            # Nada casou com o valor pedido: melhor nao escolher do que escolher errado.
+            logger.warning(f"   ⚠ Nenhuma opcao casa com {valor!r} — nao vou confirmar nada")
             return None
-        if self._combobox_commitou() is False:
-            logger.warning("   ⚠ Combobox recusou a selecao (bfm-invalid)")
-        return achado['texto']
+        confirmou = self._clicar_opcao_bento_combobox(
+            {'index': achado['indice'], 'nome': achado['texto']}
+        )
+        return achado['texto'] if confirmou else None
 
     def _clicar_opcao_bento_combobox(self, opcao: dict) -> bool:
         """Confirma uma opcao do bento-combobox descendo com as setas + Enter.
@@ -1982,20 +1994,48 @@ class LegalOneCadastro:
         """
         if not self.page or not opcao:
             return False
+        row_id = (opcao.get('id') or '').strip()
+        alvo = (opcao.get('nome') or opcao.get('texto_completo') or '').strip()
         idx = int(opcao.get('index') or 0)
         try:
-            for _ in range(idx + 1):
+            # Desce conferindo qual row esta 'highlighted' — nao confia na contagem.
+            # Contar setas commitou a linha errada em silencio (negotiationContract
+            # virou 'Hon - 0000080/001' em 30/07), e valor errado no cadastro e' pior
+            # que campo recusado.
+            chegou = False
+            for _ in range(idx + 8):
                 self.page.keyboard.press('ArrowDown')
-                time.sleep(0.05)
+                time.sleep(0.06)
+                ativa = self.page.evaluate(
+                    """() => {
+                        const r = document.querySelector('.bento-list-row.highlighted');
+                        return r ? {id: r.id || '', texto: (r.innerText || '').trim()} : null;
+                    }"""
+                )
+                if not ativa:
+                    continue
+                if row_id and ativa['id'] == row_id:
+                    chegou = True
+                    break
+                if not row_id and alvo and alvo.lower() in (ativa['texto'] or '').lower():
+                    chegou = True
+                    break
+            if not chegou:
+                logger.warning(
+                    f"   ⚠ Nao consegui destacar a opcao pretendida ({alvo or row_id!r}) — "
+                    "abortando em vez de confirmar outra linha"
+                )
+                return False
+
             self.page.keyboard.press('Enter')
             time.sleep(0.8)
 
-            commitou = self._combobox_commitou()
-            if commitou is False:
+            if self._combobox_commitou() is False:
                 logger.warning(
                     "   ⚠ Combobox recusou a selecao (bfm-invalid) — o LegalOne vai "
                     "tratar este campo como vazio"
                 )
+                return False
             return True
         except Exception as e:
             logger.debug(f"Erro ao confirmar opção combobox: {e}")
@@ -4739,7 +4779,13 @@ class LegalOneCadastro:
                     logger.debug(f"         [{i}] {op.get('nome', '?')} | {op.get('origem', '?')}")
 
                 # Tenta fuzzy matching
-                melhor = self._selecionar_melhor_opcao_combobox(valor, opcoes_bento, documento_referencia=cnpj)
+                # Campos de catalogo (contrato de honorarios, centro de custo) nao
+                # aceitam fuzzy: escolher errado grava contrato de outro cliente no
+                # processo. Nome de pessoa continua com 45%, que e' o que faz
+                # 'Itau Unibanco S/A' casar com 'Itau Unibanco Holding S.A.'.
+                limiar_campo = 0.9 if _campo_exige_match_forte(nome_campo) else 0.45
+                melhor = self._selecionar_melhor_opcao_combobox(
+                    valor, opcoes_bento, limiar=limiar_campo, documento_referencia=cnpj)
                 if melhor:
                     if permitir_adicionar and self._opcao_exige_adicao_manual(melhor):
                         origem = (melhor.get('origem') or '').strip()
@@ -4799,8 +4845,12 @@ class LegalOneCadastro:
                             opcoes_variante = self._extrair_opcoes_bento_combobox()
                             if opcoes_variante:
                                 logger.info(f"         📋 {len(opcoes_variante)} opções para \"{variante}\"")
+                                # Mesmo limiar da primeira passada: senao a busca por
+                                # variantes reabilita o fuzzy num campo de catalogo e
+                                # desfaz a protecao (visto em 30/07 com 'Pro bono').
                                 melhor_v = self._selecionar_melhor_opcao_combobox(
-                                    variante, opcoes_variante, documento_referencia=cnpj,
+                                    variante, opcoes_variante, limiar=limiar_campo,
+                                    documento_referencia=cnpj,
                                     valor_original=valor,
                                 )
                                 if melhor_v:
