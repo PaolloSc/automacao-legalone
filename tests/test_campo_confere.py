@@ -43,6 +43,13 @@ def test_grid_mostra_mais_que_o_nome():
         "Itaú Unibanco S.A. 60.701.190/0001-04 Existente na base")
 
 
+def test_responsavel_grid_tem_email_na_coluna_do_nome():
+    # 30/07: no Responsavel a coluna 1 e' o e-mail, o campo fica com o nome de
+    # exibicao, e a checagem contra a coluna 'nome' limpava a selecao correta.
+    assert _bot("Monica Pinheiro")._campo_confere_com(
+        "Monica Pinheiro monica@carvalhofurtadoadv.com.br Ativo")
+
+
 def test_sem_esperado_nao_reprova():
     assert _bot("qualquer coisa")._campo_confere_com("")
 

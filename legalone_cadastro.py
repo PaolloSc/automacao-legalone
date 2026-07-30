@@ -2158,9 +2158,13 @@ class LegalOneCadastro:
             # bot aceitava qualquer selecao valida — em 30/07 o Contrario Principal
             # ficou 'Augusto Nasser Borges', pessoa sem relacao com o processo, porque
             # a navegacao por teclado continuou sobre uma lista ja trocada.
-            if alvo and not self._campo_confere_com(alvo):
+            # Confere contra a LINHA inteira, nao contra a coluna 'nome': o layout
+            # muda por combobox e no Responsavel a coluna 1 e' o e-mail, entao o
+            # campo ficava 'Monica Pinheiro' e a checagem esperava 'monica@...'.
+            alvo_conf = (opcao.get('texto_completo') or alvo or '').strip()
+            if alvo_conf and not self._campo_confere_com(alvo_conf):
                 logger.warning(
-                    f"   ⚠ Campo ficou com valor diferente do pretendido ({alvo!r}) — "
+                    f"   ⚠ Campo ficou com valor diferente do pretendido ({alvo_conf!r}) — "
                     "limpando para nao gravar parte errada"
                 )
                 self._limpar_campo_focado()
