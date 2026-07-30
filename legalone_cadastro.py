@@ -1948,7 +1948,21 @@ class LegalOneCadastro:
                         f"Selecionado: \"{nome_sel}\" (sim. original: {melhor_orig:.0%})"
                     )
                     return opcao_sel
-                logger.debug("      Similaridade com valor original não foi suficiente para desambiguar.")
+                # Empate no topo nao invalida o criterio: descarta quem ficou pra tras e
+                # deixa as fases seguintes desempatarem entre os que empataram. 30/07:
+                # 'Itau Unibanco S.A.' tem 5 filiais (sim. 1.0) e o 'Holding' (0.8) so
+                # ganhava porque o empate fazia esta fase desistir da lista inteira.
+                sobreviventes = [(o, sc) for o, sc, s in scores_orig
+                                 if melhor_orig - s < 0.05]
+                if 1 <= len(sobreviventes) < len(homonimos):
+                    descartados = len(homonimos) - len(sobreviventes)
+                    logger.info(
+                        f"      🎯 Similaridade com o valor original descartou {descartados} "
+                        f"homônimo(s) mais distante(s); {len(sobreviventes)} seguem empatados"
+                    )
+                    homonimos = sobreviventes
+                else:
+                    logger.debug("      Similaridade com valor original não foi suficiente para desambiguar.")
 
             # --- Fase 2c: desambiguação por origem (preferir 'Existente na base' > 'Interno' > etc.) ---
             origens_preferidas = ['existente na base', 'existente', 'interno', 'legalone', 'legal one', 'cadastro']
