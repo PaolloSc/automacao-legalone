@@ -61,10 +61,15 @@ try:
 except Exception as _brain_err:
     CLAUDE_BRAIN_DISPONIVEL = False
 
-# Configurar logging com novo sistema
+# Configurar logging com novo sistema.
+# Sob pytest o log NAO vai para o arquivo de producao: as fixtures (ALFA/BETA/GAMA,
+# pipeline mockado) escreviam '[QA] CNPJ INVALIDO' e '[OK] PROCESSO CADASTRADO!' no
+# automacao_legalone.log e faziam a rodada de teste parecer cadastro real — em
+# 30/07 isso me levou a dar como cadastrado um processo que tinha falhado.
+_sob_teste = 'pytest' in sys.modules or 'PYTEST_CURRENT_TEST' in os.environ
 logger, formatter = setup_logging(
     verbosity=LOGGING_CONFIG.get('nivel', 'NORMAL'),
-    log_file=LOGGING_CONFIG.get('arquivo_geral', 'automacao_legalone.log'),
+    log_file=None if _sob_teste else LOGGING_CONFIG.get('arquivo_geral', 'automacao_legalone.log'),
     show_empty_fields=LOGGING_CONFIG.get('mostrar_campos_vazios', False)
 )
 
