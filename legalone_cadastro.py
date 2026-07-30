@@ -7752,11 +7752,12 @@ class LegalOneCadastro:
                 pass
 
             # 6c. LegalOne ainda acusa obrigatorios vazios? resolve via cua-driver
-            restantes = self._resolver_pendentes_com_cua(dados_processo)
-            if restantes:
-                dados_processo.setdefault('_qa_warnings', []).append(
-                    'Campos obrigatorios seguiram vazios: ' + ', '.join(restantes)
-                )
+            # O detector nao enxerga os combobox da UI nova e acusa vazio campo
+            # preenchido. Quem sabe a verdade e' o LegalOne: se algo faltasse, o
+            # Salvar ficaria desabilitado e o [SALVAR] lista os campos reais.
+            # Nao vira aviso no e-mail de sucesso — 30/07, pasta 0007351, os 7
+            # 'vazios' estavam todos preenchidos.
+            self._resolver_pendentes_com_cua(dados_processo)
 
             # 7. Clica no botao Salvar
             if self.clicar_salvar():

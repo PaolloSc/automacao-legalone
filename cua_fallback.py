@@ -35,11 +35,16 @@ def _call(tool: str, payload: dict, timeout: int = 90) -> dict | None:
             timeout=timeout,
         )
         if r.returncode != 0:
-            logger.warning(f"[CUA] {tool} rc={r.returncode}: {(r.stderr or r.stdout)[:200]}")
+            logger.warning(f"[CUA] {tool} rc={r.returncode}: {(r.stderr or r.stdout or '')[:200]}")
+            return None
+        # Sem isso, stdout vazio virava 'json object must be str... not NoneType' e
+        # escondia o motivo real (o driver nao respondeu).
+        if not (r.stdout or '').strip():
+            logger.warning(f"[CUA] {tool} nao respondeu nada. stderr={(r.stderr or '')[:200]}")
             return None
         return json.loads(r.stdout)
     except Exception as e:
-        logger.warning(f"[CUA] {tool} falhou: {e}")
+        logger.warning(f"[CUA] {tool} falhou ({type(e).__name__}): {e}")
         return None
 
 
