@@ -50,9 +50,9 @@ def test_reproduz_bug_fase_2b_escolhe_placeholder_sem_cnpj_de_referencia():
     )
 
     assert melhor is not None
-    # Isto documenta o bug tal como observado. Apos o fix (Fase 2b passar a
-    # respeitar origem), este assert deve ser invertido — ver teste abaixo.
-    assert melhor["origem"] == "Capturado no órgão", (
+    # Fix de 30/07: acento fora da comparacao + prioridade de origem na
+    # ordenacao. O contato real da base passou a ganhar do capturado.
+    assert melhor["origem"] == "Existente na base", (
         "comportamento mudou — se o bug foi corrigido, troque esta "
         "asserção para esperar uma origem 'Existente na base'"
     )
@@ -72,7 +72,7 @@ def test_opcao_escolhida_pela_fase_2b_ainda_exige_adicao_manual():
         valor_original="Itau Unibanco S/A",
     )
 
-    assert cad._opcao_exige_adicao_manual(melhor) is True, (
+    assert cad._opcao_exige_adicao_manual(melhor) is False, (
         "a opcao escolhida tem origem 'Capturado no orgao' e deveria "
         "obrigatoriamente passar por _adicionar_contato_novo"
     )
