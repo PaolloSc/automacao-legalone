@@ -5,6 +5,9 @@ from automacao_legalone_completa import AutomacaoLegalOne
 
 
 def _auto():
+    # A consulta a Receita e' cacheada por CNPJ; sem limpar, o mesmo numero
+    # devolveria a resposta mockada do teste anterior.
+    AutomacaoLegalOne._consultar_receita_cached.cache_clear()
     return AutomacaoLegalOne.__new__(AutomacaoLegalOne)
 
 

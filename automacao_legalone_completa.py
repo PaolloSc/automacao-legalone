@@ -16,6 +16,7 @@ import unicodedata
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from dotenv import load_dotenv
 import requests
 
@@ -333,6 +334,14 @@ class AutomacaoLegalOne:
                 return False
         return True
 
+    # BrasilAPI limita a poucas consultas por minuto (429). O mesmo CNPJ reaparece a
+    # cada reprocessamento do mesmo email — cache por processo ja' derruba o grosso.
+    # ponytail: cache em memoria; se o 429 voltar, e' hora de espacar as chamadas.
+    @staticmethod
+    @lru_cache(maxsize=256)
+    def _consultar_receita_cached(num: str):
+        return requests.get(f"https://brasilapi.com.br/api/cnpj/v1/{num}", timeout=15)
+
     def _validar_cnpjs(self, dados_processo: dict) -> None:
         """CNPJ inválido/placeholder vira warning no QA e no email de conferência (não aborta)."""
         vistos = set()
@@ -367,7 +376,7 @@ class AutomacaoLegalOne:
         """Consulta o CNPJ na Receita (BrasilAPI) e alerta se não existir ou a razão social não bater."""
         num = re.sub(r"\D", "", cnpj)
         try:
-            resp = requests.get(f"https://brasilapi.com.br/api/cnpj/v1/{num}", timeout=15)
+            resp = self._consultar_receita_cached(num)
         except requests.RequestException as e:
             logger.warning(f"[QA] Receita indisponível para CNPJ {cnpj}: {e}")
             return
