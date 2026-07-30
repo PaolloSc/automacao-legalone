@@ -1752,6 +1752,35 @@ class LegalOneCadastro:
         val_clean = re.sub(r'[^\w\s]', '', val_lower)
         doc_ref = self._normalizar_documento(documento_referencia)
 
+        # Catalogo: procura o valor em QUALQUER coluna da linha e exige texto literal.
+        # A ordem das colunas muda de um combobox para outro (na grade de honorarios
+        # a descricao ora e' a coluna 0, ora a 1), entao mapear por indice erra.
+        # Havendo mais de uma linha (ex.: varios contratos 'Pro bono', um por
+        # cliente), desempata pelo cliente do processo; sem desempate, recusa.
+        if getattr(self, '_match_por_linha_inteira', False):
+            def _norm(t):
+                t = unicodedata.normalize('NFKD', str(t or '')).encode('ascii', 'ignore').decode()
+                return re.sub(r'\s+', ' ', t).strip().lower()
+
+            alvo = _norm(valor_desejado)
+            achados = [o for o in opcoes if alvo and alvo in _norm(o.get('texto_completo'))]
+            if not achados:
+                logger.info(f"      ⚠ Nenhuma linha contem \"{valor_desejado}\" — nao vou escolher nada")
+                return None
+            if len(achados) > 1:
+                cliente = _norm(getattr(self, '_cliente_ref', '') or '')
+                por_cliente = [o for o in achados
+                               if cliente and cliente in _norm(o.get('texto_completo'))]
+                if len(por_cliente) == 1:
+                    logger.info(f"      🎯 \"{valor_desejado}\" do cliente desambiguado")
+                    return por_cliente[0]
+                logger.warning(
+                    f"      ⚠ {len(achados)} linhas com \"{valor_desejado}\" e nenhuma casa o "
+                    f"cliente {getattr(self, '_cliente_ref', None)!r} — deixando vazio para conferencia"
+                )
+                return None
+            return achados[0]
+
         # --- Fase 1: calcular scores de todas as opções ---
         candidatos = []  # lista de (opcao, score)
 
@@ -4783,7 +4812,9 @@ class LegalOneCadastro:
                 # aceitam fuzzy: escolher errado grava contrato de outro cliente no
                 # processo. Nome de pessoa continua com 45%, que e' o que faz
                 # 'Itau Unibanco S/A' casar com 'Itau Unibanco Holding S.A.'.
-                limiar_campo = 0.9 if _campo_exige_match_forte(nome_campo) else 0.45
+                # Catalogo: match literal na linha inteira; pessoa segue no fuzzy.
+                self._match_por_linha_inteira = _campo_exige_match_forte(nome_campo)
+                limiar_campo = 0.9 if self._match_por_linha_inteira else 0.45
                 melhor = self._selecionar_melhor_opcao_combobox(
                     valor, opcoes_bento, limiar=limiar_campo, documento_referencia=cnpj)
                 if melhor:
@@ -4985,6 +5016,17 @@ class LegalOneCadastro:
                 ):
                     return True
                 logger.warning(f"      âš  Não foi possível criar contato para \"{valor}\". Seguindo fallback final.")
+
+            # Fallback de desespero: pega a primeira opcao da lista. Em campo de
+            # catalogo isso grava o contrato de outro cliente (em 30/07 saiu
+            # 'Hon - 0000002/002' numa rodada e 'Hon - 0000080/001' noutra, para o
+            # mesmo pedido) — melhor deixar vazio e o Salvar barrar.
+            if getattr(self, '_match_por_linha_inteira', False):
+                logger.warning(
+                    f"   ⚠ {nome_campo}: nada casou com \"{valor}\" e este campo nao aceita "
+                    "chute — deixando vazio para preenchimento manual"
+                )
+                return False
 
             try:
                 primeira_opcao = self.page.wait_for_selector(
@@ -5500,6 +5542,9 @@ class LegalOneCadastro:
                 dados.get('cliente')
                 or self._obter_outro_dado(dados, 'Cliente principal', 'Cliente')
             ) or ''
+            # Usado para desempatar catalogos que repetem o mesmo nome por cliente
+            # (a grade de honorarios tem um 'Pro bono' para cada cliente).
+            self._cliente_ref = cliente_raw
             contrario_raw = self._valor_limpo(
                 dados.get('contrario')
                 or self._obter_outro_dado(

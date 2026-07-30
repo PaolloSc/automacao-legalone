@@ -31,7 +31,7 @@ CAMPOS = [
     ("position", "Reclamante"),
     ("mainOpposite", "Itaú Unibanco Holding S.A."),
     ("mainResponsible", "Monica Pinheiro"),
-    ("negotiationContract", "Pro bono"),
+    ("negotiationContract", "Hon - 0000080/001"),
     ("actionType", "Reclamação Trabalhista"),
 ]
 
