@@ -7,12 +7,18 @@ Requer a infra da VM: Xvfb :99 + bus de sessao padrao + cuadriver.service.
 import json
 import logging
 import os
+import shutil
 import subprocess
 import unicodedata
 
 logger = logging.getLogger("AutomacaoLegalOne")
 
-CUA_BIN = os.path.expanduser("~/.local/bin/cua-driver")
+# Windows usa .exe e caminho proprio; CUA_BIN sobrescreve os dois.
+CUA_BIN = os.getenv("CUA_BIN") or next(
+    (p for p in (os.path.expanduser("~/.local/bin/cua-driver"),
+                 os.path.expanduser("~/.local/bin/cua-driver.exe"),
+                 shutil.which("cua-driver") or "") if p and os.path.exists(p)),
+    os.path.expanduser("~/.local/bin/cua-driver"))
 
 
 def disponivel() -> bool:

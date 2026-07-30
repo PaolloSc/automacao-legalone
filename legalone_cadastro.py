@@ -1473,8 +1473,12 @@ class LegalOneCadastro:
     # -------------------------------------------------------------------
     def _calcular_similaridade(self, texto1: str, texto2: str) -> float:
         """Calcula similaridade entre dois textos (0.0 a 1.0) usando SequenceMatcher."""
-        t1 = re.sub(r'[^\w\s]', '', (texto1 or '').lower().strip())
-        t2 = re.sub(r'[^\w\s]', '', (texto2 or '').lower().strip())
+        # Sem tirar acento, 'Itau' (dado) casa melhor com a grafia capturada
+        # 'Itau Unibanco S.A' do que com 'Itau Unibanco S.A.' da base — e o
+        # contato errado ganhava por 2 pontos.
+        _sa = lambda t: unicodedata.normalize('NFKD', t or '').encode('ascii', 'ignore').decode()
+        t1 = re.sub(r'[^\w\s]', '', _sa(texto1).lower().strip())
+        t2 = re.sub(r'[^\w\s]', '', _sa(texto2).lower().strip())
         if not t1 or not t2:
             return 0.0
         return difflib.SequenceMatcher(None, t1, t2).ratio()
