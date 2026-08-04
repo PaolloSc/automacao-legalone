@@ -21,6 +21,12 @@ CUA_BIN = os.getenv("CUA_BIN") or next(
     os.path.expanduser("~/.local/bin/cua-driver"))
 
 
+# Titulo da pagina que o Playwright esta dirigindo. Sem isso nao da' para separar a
+# janela do bot das do usuario: em 04/08 o Chrome pessoal tambem estava com uma tela
+# do LegalOne aberta. Quem preenche e' o legalone_cadastro, antes de acionar o CUA.
+titulo_alvo: str = ""
+
+
 def disponivel() -> bool:
     return os.path.exists(CUA_BIN)
 
@@ -32,6 +38,11 @@ def _call(tool: str, payload: dict, timeout: int = 90) -> dict | None:
             input=json.dumps(payload),
             capture_output=True,
             text=True,
+            # text=True sozinho decodifica em cp1252 no Windows: o primeiro acento da
+            # arvore do LegalOne matava a thread de leitura e stdout virava None —
+            # era esse o '[CUA] falhou: ... not NoneType' (04/08).
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
         )
         if r.returncode != 0:
@@ -54,11 +65,26 @@ def _norm(s: str | None) -> str:
 
 
 def _janela_chromium():
+    """Janela do navegador que a automacao dirige — nao a do usuario.
+
+    O Playwright abre 'Chrome for Testing'; pegar a primeira janela com 'chrome'
+    no titulo entregava o Chrome pessoal (04/08: 4 janelas abertas, a nossa era a
+    quarta). O CUA lia e clicava na tela errada, e por isso nunca achava elemento.
+    """
     d = _call("list_windows", {}, timeout=30)
-    for w in (d or {}).get("windows", []):
-        if "chrome" in (w.get("title") or "").lower():
-            return w.get("pid"), w.get("window_id")
-    return None, None
+    janelas = [w for w in (d or {}).get("windows", [])
+               if "chrome" in (w.get("title") or "").lower()]
+    if not janelas:
+        return None, None
+    t = (titulo_alvo or "").strip().lower()
+    alvo = next((w for w in janelas if t and t in (w.get("title") or "").lower()),
+                janelas[0])
+    if t and t not in (alvo.get("title") or "").lower():
+        logger.warning(
+            f"[CUA] Janela {titulo_alvo[:40]!r} nao esta aberta; "
+            f"usando {alvo.get('title', '')[:40]!r}"
+        )
+    return alvo.get("pid"), alvo.get("window_id")
 
 
 def clicar_opcao(texto: str, papeis: tuple = ("list item", "menu item", "option", "cell", "row", "static", "link")) -> bool:

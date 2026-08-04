@@ -5258,6 +5258,11 @@ class LegalOneCadastro:
         except Exception as e:
             logger.warning(f"   [CUA] Import falhou ({e}) - sem fallback para {nome_campo}")
             return False
+        # Sem o titulo, o CUA pode mirar uma janela do LegalOne aberta pelo usuario.
+        try:
+            cua_fallback.titulo_alvo = self.page.title() or ''
+        except Exception:
+            cua_fallback.titulo_alvo = ''
         logger.info(f"   [CUA] Fallback de acessibilidade para {nome_campo}...")
         # 1) foca o campo: preferencia pela arvore AT-SPI (UI nova nao tem os
         # seletores CSS antigos); seletor CSS fica como ultimo recurso
