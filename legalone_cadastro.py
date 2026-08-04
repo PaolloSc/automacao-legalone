@@ -2064,7 +2064,8 @@ class LegalOneCadastro:
         So grava metodo/URL/corpo; Cookie e Authorization saem redigidos — o
         arquivo e' um mapa do formato, nao um cofre de credencial.
         """
-        if not self.context or os.getenv('LEGALONE_ESPIAR', '1') != '1':
+        # opt-in: so' liga com LEGALONE_ESPIAR=1 (grava trafego em disco)
+        if not self.context or os.getenv('LEGALONE_ESPIAR', '0') != '1':
             return
         destino = Path(__file__).parent / 'docs' / 'varredura' / 'requests_legalone.jsonl'
         destino.parent.mkdir(parents=True, exist_ok=True)
@@ -9450,6 +9451,71 @@ class LegalOneCadastro:
             logger.warning(f"   ⚠ Falha ao abrir processo pela tela atual: {e}")
             return False
 
+    @staticmethod
+    def _orgao_do_monitoramento(texto: str) -> str:
+        """'TRT03 - Diario do Tribunal Regional do Trabalho da 3a Regiao' -> 'TRT 3'."""
+        m = re.search(r'\bTRT\s*0*(\d{1,2})\b', texto or '', re.I)
+        return f"TRT {int(m.group(1))}" if m else ''
+
+    def _preencher_lookup_antigo(self, id_base: str, valor: str) -> bool:
+        """Campos lookup da tela de alteracao (#OrgaoText/#OrgaoId, Procedimento, Fase).
+
+        Aqui o dropdown do jQuery COMMITA no clique — o problema do bento-combobox
+        nao existe. O que vale como aceite e' o hidden #<id>Id ter ganhado valor;
+        o texto visivel sozinho nao prova nada.
+        """
+        if not self.page or not valor:
+            return False
+        try:
+            campo = self.page.query_selector(f'#{id_base}Text')
+            if not campo:
+                logger.info(f"   ⚠ Lookup {id_base} nao esta nesta tela")
+                return False
+            campo.click()
+            campo.fill('')
+            campo.type(str(valor)[:40], delay=40)
+            try:
+                self.page.wait_for_selector('.ac_results li', state='visible', timeout=8000)
+            except Exception:
+                logger.warning(f"   ⚠ {id_base}: dropdown nao abriu para {valor!r}")
+                return False
+            linhas = self.page.query_selector_all('.ac_results li')
+            textos = [(l, (l.inner_text() or '').strip()) for l in linhas]
+            alvo = next((l for l, t in textos if t.lower() == str(valor).lower()), None) \
+                or next((l for l, t in textos if str(valor).lower() in t.lower()), None) \
+                or (textos[0][0] if textos else None)
+            if not alvo:
+                return False
+            alvo.click()
+            time.sleep(0.5)
+            hid = self.page.eval_on_selector(f'#{id_base}Id', 'el => el.value') or ''
+            if not str(hid).strip():
+                logger.warning(f"   ⚠ {id_base}: clique nao gravou o Id — campo segue vazio")
+                return False
+            logger.info(f"   ✓ {id_base}: {valor} (Id={hid})")
+            return True
+        except Exception as e:
+            logger.warning(f"   ⚠ Lookup {id_base} falhou: {e}")
+            return False
+
+    def _preencher_lookups_edicao(self, dados: dict | None) -> None:
+        """Orgao, Procedimento e Fase na tela de alteracao."""
+        dados = dados or {}
+        painel = ''
+        try:
+            painel = self.page.eval_on_selector(
+                '.monitoring-summary-parameter', 'el => el.innerText') or ''
+        except Exception:
+            pass
+        outros = dados.get('outros_dados') or {}
+        for id_base, valor in (
+            ('Orgao', dados.get('orgao') or self._orgao_do_monitoramento(painel)),
+            ('Procedimento', outros.get('procedimento') or dados.get('procedimento')),
+            ('Fase', dados.get('fase')),
+        ):
+            if valor:
+                self._preencher_lookup_antigo(id_base, self._valor_limpo(valor))
+
     def realizar_acoes_pos_cadastro(self, dados_processo: dict | None = None):
         """Executa ações após o salvamento: abrir processo, entrar em Alterar e preencher pedidos do Forms."""
         try:
@@ -9562,6 +9628,8 @@ class LegalOneCadastro:
                         f"   [ALTERAR] Completando obrigatórios (vazios detectados: {len(vazios)}; rascunho: {veio_de_rascunho})"
                     )
                     self.preencher_campos_obrigatorios(dados_processo)
+                # Orgao/Procedimento/Fase so existem nesta tela (lookup jQuery)
+                self._preencher_lookups_edicao(dados_processo)
             except Exception as e:
                 logger.warning(f"   [ALTERAR] Falha ao completar obrigatórios: {e}")
 
