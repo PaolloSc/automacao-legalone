@@ -946,23 +946,10 @@ class FormsExtractor:
         logger.info(f"[NAV] 🔄 Pulando para resposta #{ultimo_salvo} (último processado)...")
         await self._navegar_para_resposta(ultimo_salvo)
 
-        # Passo 2a: salto exponencial. Andar de seta em seta custa ~2,2s por resposta:
-        # com o contador em #1 e a ultima em #828, sao ~30 min so de navegacao (04/08).
-        # Digitar um numero maior que o total faz o Forms parar na ultima, entao dobrar
-        # o passo acha o fim em ~10 saltos.
-        atual = await self._obter_numero_resposta_atual() or ultimo_salvo
-        passo = 64
-        while passo:
-            await self._navegar_para_resposta(atual + passo)
-            novo = await self._obter_numero_resposta_atual()
-            if novo and novo > atual:
-                atual = novo
-                passo *= 2
-            else:
-                passo //= 2
-        logger.info(f"[NAV] ⏩ Salto exponencial parou em #{atual}")
-
-        # Passo 2b: seta ate a ultima (agora sobram poucas)
+        # Passo 2: seta ate a ultima. Tentei salto exponencial aqui e foi pior: o Forms
+        # NAO trunca numero acima do total — aceita qualquer um e mostra resposta vazia,
+        # entao o passo dobrava para sempre (04/08: 833 -> 131841). Quem evita a
+        # caminhada longa e' o contador/piso, nao o salto.
         logger.info("[NAV] ➡ Avançando com seta até a última resposta...")
         avancos = 0
         while True:

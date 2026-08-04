@@ -5928,7 +5928,10 @@ class LegalOneCadastro:
             # 4. Responsável principal * (default: Paollo Sanchez)
             # A chave 'advogado' do Forms mapeia para o Responsável principal no LegalOne.
             responsavel = (
-                dados.get('responsavel')
+                # ponytail: alavanca de uma rodada — passar na execucao, nao no .env,
+                # senao todo processo herda o mesmo responsavel.
+                os.getenv('LEGALONE_RESPONSAVEL_FORCADO')
+                or dados.get('responsavel')
                 or dados.get('advogado')                                          # Forms → Responsável
                 or self._obter_outro_dado(
                     dados,
