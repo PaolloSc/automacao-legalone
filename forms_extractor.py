@@ -939,7 +939,10 @@ class FormsExtractor:
         Retorna o número da última resposta, ou None se não conseguir determinar.
         """
         # Passo 1: Pula direto para o último número conhecido
-        ultimo_salvo = self.ler_ultimo_numero()
+        # ponytail: piso fixo em 830 (as respostas antigas ja foram cadastradas).
+        # Trocar por FORMS_RESPOSTA_MINIMA quando o Forms passar dessa faixa.
+        ultimo_salvo = max(self.ler_ultimo_numero() or 0,
+                           int(os.getenv('FORMS_RESPOSTA_MINIMA', '830')))
         logger.info(f"[NAV] 🔄 Pulando para resposta #{ultimo_salvo} (último processado)...")
         await self._navegar_para_resposta(ultimo_salvo)
 
