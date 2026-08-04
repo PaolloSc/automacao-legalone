@@ -7653,6 +7653,13 @@ class LegalOneCadastro:
                     )
                     self.last_error_reason = None
                     return True
+                if self._processo_ja_cadastrado and eh_cadastro_inicial(dados_processo):
+                    logger.info(
+                        "✅ Cadastro inicial de processo que ja existe — nada a fazer, "
+                        "nao vou abrir para alteracao."
+                    )
+                    self.last_error_reason = None
+                    return True
                 if self._processo_ja_cadastrado:
                     logger.info("🔄 Processo já cadastrado no LegalOne — abrindo para alteração e cadastro de pedidos...")
                     if self.realizar_acoes_pos_cadastro(dados_processo):
@@ -7706,6 +7713,12 @@ class LegalOneCadastro:
             except Exception:
                 pass
 
+            if self._processo_ja_cadastrado and eh_cadastro_inicial(dados_processo):
+                logger.info(
+                    "✅ Cadastro inicial de processo que ja existe (detectado na URL) — nada a fazer."
+                )
+                self.last_error_reason = None
+                return True
             if self._processo_ja_cadastrado:
                 logger.info("🔄 Processo já cadastrado (detectado na URL) — abrindo para alteração e pedidos...")
                 if self.realizar_acoes_pos_cadastro(dados_processo):
