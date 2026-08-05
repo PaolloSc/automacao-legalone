@@ -4947,6 +4947,18 @@ class LegalOneCadastro:
                 raise
             time.sleep(2)  # Aguarda sugestões aparecerem
 
+            # Sim/Nao fecha com Enter e pronto. Deixar esses campos passarem pelo
+            # bento-combobox custava ~28s cada (04/08, Datacloud: abre dropdown com
+            # 116 linhas — que sao do campo ANTERIOR —, tenta destacar por setas,
+            # falha, e so entao cai no Enter que sempre funcionou).
+            if _valor_curto:
+                logger.info(f"   ⏩ {nome_campo}: valor curto, confirmando \"{valor}\" com Enter")
+                self.page.keyboard.press('Enter')
+                time.sleep(0.8)
+                if self._combobox_commitou() is not False:
+                    return True
+                logger.info(f"   ↩ {nome_campo}: Enter nao commitou, seguindo pelo dropdown")
+
             # ----------------------------------------------------------
             # Estratégia 0: Bento-tree (árvore hierárquica)
             # ----------------------------------------------------------
