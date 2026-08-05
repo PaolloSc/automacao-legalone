@@ -5081,6 +5081,24 @@ class LegalOneCadastro:
                 else:
                     logger.warning(f"   ⚠ \"{valor}\" não encontrado e adicionar não permitido")
 
+            # Sim/Nao: vai direto para o Enter. O bento-combobox nunca fechou esses
+            # campos (a lista que abre e' a do campo anterior, com 100 linhas), e a
+            # Estrategia 2 gasta minutos varrendo seletores genericos antes de cair
+            # no mesmo Enter que funciona todas as vezes (14:35, 15:09, 15:21, 23:16).
+            if _valor_curto:
+                logger.info(f"   ⏩ {nome_campo}: valor curto, confirmando \"{valor}\" com Enter")
+                try:
+                    campo.click()
+                    campo.fill('')
+                    time.sleep(0.2)
+                    campo.type(valor, delay=30)
+                    time.sleep(1)
+                    self.page.keyboard.press('Enter')
+                    time.sleep(1)
+                    return True
+                except Exception as e:
+                    logger.warning(f"   ⚠ {nome_campo}: Enter direto falhou: {e}")
+
             # ----------------------------------------------------------
             # Estratégia 2: Dropdown genérico (role="option", etc.)
             # ----------------------------------------------------------
@@ -5173,6 +5191,12 @@ class LegalOneCadastro:
             # catalogo isso grava o contrato de outro cliente (em 30/07 saiu
             # 'Hon - 0000002/002' numa rodada e 'Hon - 0000080/001' noutra, para o
             # mesmo pedido) — melhor deixar vazio e o Salvar barrar.
+            # Antes de desistir, o cua-driver tenta pela arvore de acessibilidade —
+            # ele enxerga a tela, nao o DOM. Ate 04/08 so era acionado na varredura
+            # final, entao campo que falhava no meio nao tinha segunda chance.
+            if self._fallback_cua_combobox(seletor, valor, nome_campo, nome_campo):
+                return True
+
             if getattr(self, '_match_por_linha_inteira', False):
                 logger.warning(
                     f"   ⚠ {nome_campo}: nada casou com \"{valor}\" e este campo nao aceita "
