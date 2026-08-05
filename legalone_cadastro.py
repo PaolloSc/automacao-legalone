@@ -4955,9 +4955,13 @@ class LegalOneCadastro:
                 logger.info(f"   ⏩ {nome_campo}: valor curto, confirmando \"{valor}\" com Enter")
                 self.page.keyboard.press('Enter')
                 time.sleep(0.8)
-                if self._combobox_commitou() is not False:
+                # Enter commita a linha DESTACADA, que nem sempre e' a digitada: em
+                # 04/08 o campo pedia 'Nao' e ficou 'Sim'. Conferir o valor e' o
+                # unico jeito de saber.
+                if self._combobox_commitou() is not False and self._campo_confere_com(valor):
                     return True
-                logger.info(f"   ↩ {nome_campo}: Enter nao commitou, seguindo pelo dropdown")
+                logger.info(f"   ↩ {nome_campo}: Enter nao deixou \"{valor}\", seguindo pelo dropdown")
+                self._limpar_campo_focado()
 
             # ----------------------------------------------------------
             # Estratégia 0: Bento-tree (árvore hierárquica)
@@ -5213,7 +5217,7 @@ class LegalOneCadastro:
             # Antes de desistir, o cua-driver tenta pela arvore de acessibilidade —
             # ele enxerga a tela, nao o DOM. Ate 04/08 so era acionado na varredura
             # final, entao campo que falhava no meio nao tinha segunda chance.
-            if self._fallback_cua_combobox(seletor, valor, nome_campo, nome_campo):
+            if self._fallback_cua_combobox(seletor_input, valor, nome_campo, nome_campo):
                 return True
 
             if getattr(self, '_match_por_linha_inteira', False):
