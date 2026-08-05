@@ -494,6 +494,9 @@ class LegalOneCadastro:
                 "--disable-dev-shm-usage",
                 # expõe a árvore de acessibilidade (AT-SPI) p/ o cua-driver no servidor
                 "--force-renderer-accessibility",
+                # porta CDP: permite anexar um observador (connect_over_cdp) sem
+                # atrapalhar o cadastro. LEGALONE_CDP_PORT=0 desliga.
+                f"--remote-debugging-port={os.getenv('LEGALONE_CDP_PORT', '9222')}",
             ],
             "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "locale": "pt-BR",
