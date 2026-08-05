@@ -1615,6 +1615,46 @@ class LegalOneCadastro:
             logger.debug(f"Erro ao extrair opções bento-combobox: {e}")
             return []
 
+    def _extrair_opcoes_rolando(self, alvo: str, paginas: int = 15) -> list[dict]:
+        """Rola a lista do combobox ate achar `alvo`, juntando as linhas de cada pagina.
+
+        A grade de honorarios e' virtualizada e digitar NAO filtra: so as primeiras
+        ~100 linhas existem no DOM, e o contrato procurado pode estar depois delas
+        (04/08: 'Hon - 0000080/001' existe, mas a lista so mostrava contratos de
+        outro cliente).
+        """
+        def _n(t):
+            t = unicodedata.normalize('NFKD', str(t or '')).encode('ascii', 'ignore').decode()
+            return re.sub(r'\s+', ' ', t).strip().lower()
+
+        alvo_n = _n(alvo)
+        vistas: dict[str, dict] = {}
+        for _ in range(paginas):
+            for op in self._extrair_opcoes_bento_combobox() or []:
+                vistas[op.get('id') or f"i{len(vistas)}"] = op
+            if alvo_n and any(alvo_n in _n(o.get('texto_completo')) for o in vistas.values()):
+                break
+            antes = len(vistas)
+            try:
+                self.page.evaluate(
+                    """() => {
+                        const rows = document.querySelectorAll('.bento-list-row');
+                        if (rows.length) rows[rows.length - 1].scrollIntoView({block: 'end'});
+                    }"""
+                )
+            except Exception:
+                break
+            time.sleep(0.6)
+            if len(vistas) == antes and _ > 1:
+                # parou de crescer: chegou ao fim da lista
+                for op in self._extrair_opcoes_bento_combobox() or []:
+                    vistas[op.get('id') or f"i{len(vistas)}"] = op
+                if len(vistas) == antes:
+                    break
+        opcoes = list(vistas.values())
+        logger.info(f"      📜 Lista rolada: {len(opcoes)} linhas acumuladas")
+        return opcoes
+
     def _normalizar_documento(self, doc: str | None) -> str:
         """Remove formatação de CPF/CNPJ, retornando apenas dígitos."""
         if not doc:
@@ -4973,7 +5013,12 @@ class LegalOneCadastro:
             # ----------------------------------------------------------
             # Estratégia 1: Bento-combobox grid (LegalOne específico)
             # ----------------------------------------------------------
-            opcoes_bento = self._extrair_opcoes_bento_combobox()
+            # Campo de catalogo (honorarios): a lista e' virtualizada e digitar nao
+            # filtra — sem rolar, o contrato certo simplesmente nao esta no DOM.
+            if getattr(self, '_match_por_linha_inteira', False):
+                opcoes_bento = self._extrair_opcoes_rolando(valor)
+            else:
+                opcoes_bento = self._extrair_opcoes_bento_combobox()
             if opcoes_bento:
                 logger.info(f"      📋 Dropdown bento-combobox: {len(opcoes_bento)} opções encontradas")
                 for i, op in enumerate(opcoes_bento[:5]):
