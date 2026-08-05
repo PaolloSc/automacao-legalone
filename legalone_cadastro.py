@@ -4839,6 +4839,16 @@ class LegalOneCadastro:
             valor = self._valor_limpo(valor)
             cnpj = self._valor_limpo(cnpj)
 
+            # LEGALONE_CUA_PRIMEIRO=1 inverte a ordem: o cua-driver tenta antes do
+            # DOM. Serve para medir se ele erra menos que o Playwright neste
+            # formulario — ate agora ele nunca chegou a tentar de verdade, porque
+            # lia a janela errada e o stdout morria no primeiro acento.
+            if valor and os.getenv('LEGALONE_CUA_PRIMEIRO') == '1':
+                if self._fallback_cua_combobox(seletor_input, valor, nome_campo, nome_campo):
+                    logger.info(f"   ✓ {nome_campo} preenchido pelo cua-driver (modo CUA primeiro)")
+                    return True
+                logger.info(f"   ↩ {nome_campo}: cua nao fechou, caindo no caminho normal")
+
             if not valor:
                 logger.info(f"   ⚠ {nome_campo}: valor vazio, pulando...")
                 return False
@@ -5117,44 +5127,38 @@ class LegalOneCadastro:
 
             for seletor_opcao in seletores_opcao:
                 try:
-                    opcoes = self.page.query_selector_all(seletor_opcao)
-                    if not opcoes:
-                        continue
-
-                    # Le todos os textos numa ida so ao browser. inner_text() elemento
-                    # a elemento e' um round-trip CDP cada: com 116 opcoes vezes 7
-                    # seletores, o campo Datacloud ficou 3 min parado aqui (30/07).
+                    # Le os textos numa ida so, SEM criar ElementHandle: seletores
+                    # genericos como '[class*="option"]' casam milhares de elementos e
+                    # cada handle e' um round-trip CDP — o campo de honorarios ficou
+                    # 90s parado so nesta varredura (04/08).
                     textos = self.page.evaluate(
                         "(sel) => Array.from(document.querySelectorAll(sel))"
                         ".map(e => (e.innerText || '').trim())",
                         seletor_opcao,
                     )
-                    if len(textos) != len(opcoes):  # DOM mudou no meio: nao arrisca
-                        continue
+                    if not textos or len(textos) > 400:
+                        continue  # nao e' uma lista de dropdown, e' meia pagina
 
+                    escolhido = None
                     # Para valores curtos (Sim/Não): prioriza match EXATO antes de fuzzy
                     if _valor_curto:
-                        for opcao, texto_opcao in zip(opcoes, textos):
-                            if texto_opcao.lower() == valor.lower():
-                                opcao.click()
-                                logger.info(f"   ✓ {nome_campo} selecionado (match exato): {texto_opcao}")
-                                time.sleep(1)
-                                return True
-
-                    # Procura match por similaridade
-                    melhor_el = None
-                    melhor_score = 0.0
-                    for opcao, texto_opcao in zip(opcoes, textos):
-                        score = self._calcular_similaridade(valor, texto_opcao)
-                        # Também aceita "contém"
-                        if valor.lower() in texto_opcao.lower() or texto_opcao.lower() in valor.lower():
-                            score = max(score, 0.85)
-                        if score > melhor_score:
-                            melhor_score = score
-                            melhor_el = opcao
-                    if melhor_el and melhor_score >= 0.45:
-                        melhor_el.click()
-                        logger.info(f"   ✓ {nome_campo} selecionado: {melhor_el.inner_text().strip()} ({melhor_score:.0%})")
+                        escolhido = next((i for i, t in enumerate(textos)
+                                          if t.lower() == valor.lower()), None)
+                    if escolhido is None:
+                        melhor_score = 0.0
+                        for i, texto_opcao in enumerate(textos):
+                            score = self._calcular_similaridade(valor, texto_opcao)
+                            # Também aceita "contém"
+                            if valor.lower() in texto_opcao.lower() or texto_opcao.lower() in valor.lower():
+                                score = max(score, 0.85)
+                            if score > melhor_score:
+                                melhor_score = score
+                                escolhido = i
+                        if melhor_score < 0.45:
+                            escolhido = None
+                    if escolhido is not None:
+                        self.page.locator(seletor_opcao).nth(escolhido).click(timeout=4000)
+                        logger.info(f"   ✓ {nome_campo} selecionado: {textos[escolhido][:40]}")
                         time.sleep(1)
                         return True
                 except Exception:
