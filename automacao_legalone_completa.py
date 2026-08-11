@@ -82,6 +82,17 @@ def escolher_cadastro() -> str:
     return "api" if LEGALONE_API_CONFIG.get("use_api") else "browser"
 
 
+def cnj_valido(cnj) -> bool:
+    """CNJ so serve pro cadastro se tiver os 20 digitos da numeracao unica.
+
+    O teste antigo era `if not cnj`, e em 11/08/2026 passou o CNJ '. . .' —
+    o '...' do menu do Forms, raspado da tela porque a sessao tinha expirado.
+    Com dados vazios o ciclo foi ate o LegalOne, nao cadastrou nada e ainda
+    mandou e-mail de sucesso. Texto de pagina nao chega a 20 digitos.
+    """
+    return len(re.sub(r'\D', '', str(cnj or ''))) == 20
+
+
 def _id_opcional(valor):
     if valor in (None, ""):
         return None
@@ -717,8 +728,11 @@ class AutomacaoLegalOne:
                 dados_processo['cnpj_contrario'] = documento_contrario if len(digitos) == 14 else None
             # ----- END missing field mapping -----
 
-            if not dados_processo.get('cnj'):
-                logger.error("[ERRO] CNJ não encontrado!")
+            if not cnj_valido(dados_processo.get('cnj')):
+                logger.error(
+                    f"[ERRO] CNJ inválido ou ausente: "
+                    f"{dados_processo.get('cnj')!r} (esperado 20 dígitos)"
+                )
                 if email_data.get('forms_link'):
                     logger.error(f"   Verifique: {email_data['forms_link']}")
                 self.stats['erros'] += 1
@@ -727,7 +741,7 @@ class AutomacaoLegalOne:
                     {
                         **(dados_processo or {}),
                         'erro': (dados_processo or {}).get('erro_extracao')
-                                or 'CNJ não encontrado na extração',
+                                or 'CNJ ausente ou inválido na extração',
                         'contexto': 'extracao_copilot' if eh_copilot else 'extracao_forms',
                     },
                 )

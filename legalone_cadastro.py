@@ -666,6 +666,51 @@ class LegalOneCadastro:
         except Exception:
             return None
 
+    def _ja_cadastrado_com_prova(self, cnj: str | None) -> bool:
+        """Confirma 'o processo ja existe' por prova na tela, nao pela URL.
+
+        Continuar na tela de Pesquisa nao prova nada: busca que nao achou nada
+        fica ali tambem. Em 11/08/2026 essa inferencia virou '[OK] PROCESSO
+        CADASTRADO!' e e-mail de sucesso num ciclo que nao cadastrou coisa
+        alguma — o CNJ extraido era '. . .' e a pesquisa nao achou nada.
+
+        Prova aceita: linha da grid com o CNJ, ou o aviso 'ja encontra-se
+        cadastrado' citando o CNJ. Sem CNJ nao existe prova — texto de pagina
+        raspado nao pode passar por processo.
+        """
+        alvo = self._normalizar_cnj(cnj or '')
+        if not alvo or not self.page:
+            return False
+        try:
+            na_grid = self.page.evaluate(
+                """
+                (cnjNorm) => {
+                    const num = (t) => (t || '').replace(/\\D/g, '');
+                    return Array.from(
+                        document.querySelectorAll('a.grid-edit-action-row')
+                    ).some(a => {
+                        if (num(a.getAttribute('href') || '').includes(cnjNorm)) return true;
+                        const row = a.closest('tr, [role="row"], .grid-row');
+                        return !!row && num(row.innerText || row.textContent || '')
+                            .includes(cnjNorm);
+                    });
+                }
+                """,
+                alvo,
+            )
+        except Exception:
+            na_grid = False
+        if na_grid:
+            return True
+        try:
+            texto = self.page.inner_text('body')
+        except Exception:
+            return False
+        # As duas condicoes juntas: 'nenhum resultado para <CNJ>' tambem tem o
+        # CNJ no corpo e significa o contrario.
+        return ('encontra-se cadastrado' in texto
+                and alvo in self._normalizar_cnj(texto))
+
     def _capturar_numero_pasta(self, dados_processo) -> str | None:
         """Grava `numero_pasta` (ex.: 'Proc - 0007344') para o e-mail de sucesso.
 
@@ -5017,9 +5062,16 @@ class LegalOneCadastro:
             try:
                 url_atual = (self.page.url or "").lower()
                 if "/processos/processos/search" in url_atual:
-                    self._processo_ja_cadastrado = True
-                    logger.info("   ℹ Contexto permaneceu em Pesquisa de Processos; ativando fluxo de processo existente")
-                    return True
+                    if self._ja_cadastrado_com_prova(cnj):
+                        self._processo_ja_cadastrado = True
+                        logger.info("   ℹ Pesquisa achou o processo; seguindo pelo fluxo de processo existente")
+                        return True
+                    self.last_error_reason = (
+                        'Parou na Pesquisa de Processos sem achar o CNJ '
+                        f'{cnj or "(vazio)"} — nao ha o que cadastrar nem alterar'
+                    )
+                    logger.error(f"   ❌ {self.last_error_reason}")
+                    return False
             except Exception:
                 pass
 
@@ -9301,18 +9353,27 @@ class LegalOneCadastro:
                 logger.info("ðŸ–¥ï¸  Navegador mantido aberto para conferência.")
                 return True
 
-            # Guarda defensiva: se estamos na tela de pesquisa, trate como processo existente
-            # e siga para o fluxo de alteração/pedidos antes da validação de contexto de cadastro.
+            # Estar na tela de pesquisa so vira 'processo existente' com prova:
+            # a busca que nao achou nada tambem termina nessa URL.
             try:
                 url_atual = (self.page.url or "").lower()
-                if "/processos/processos/search" in url_atual:
+                if ("/processos/processos/search" in url_atual
+                        and self._ja_cadastrado_com_prova(dados_processo.get('cnj'))):
                     self._processo_ja_cadastrado = True
             except Exception:
                 pass
 
             if self._processo_ja_cadastrado and eh_cadastro_inicial(dados_processo):
+                # As duas flags juntas: sem elas o automacao conta o ciclo como
+                # cadastro novo e escreve '[OK] PROCESSO CADASTRADO!' para um
+                # processo que ja existia.
+                if not getattr(self, '_pasta_existente', None):
+                    self._pasta_existente = (
+                        self._ler_pasta_existente() or 'pasta nao identificada')
+                self._ja_cadastrado_nada_a_fazer = True
                 logger.info(
-                    "✅ Cadastro inicial de processo que ja existe (detectado na URL) — nada a fazer."
+                    f"✅ Cadastro inicial de processo que ja existe "
+                    f"('{self._pasta_existente}') — nada a fazer."
                 )
                 self.last_error_reason = None
                 return True

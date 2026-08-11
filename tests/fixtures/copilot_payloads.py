@@ -51,10 +51,11 @@ LIVIA_ITAU_SUJO = {
 }
 
 # Fixtures sinteticas pros outros 4 tipos — CNJ prefixado, nunca confundir
-# com processo real.
+# com processo real. O prefixo NAO pode ter digito: `cnj_valido()` conta os
+# digitos da string inteira, e o '2' de 'E2E' fazia 21 e reprovava o payload.
 DECISOES_SINTETICO = {
     "tipo_cadastro": "Decisoes",
-    "cnj": "TESTE-E2E-AGENTE-0000001-11.2026.5.03.0001",
+    "cnj": "TESTE-AGENTE-0000001-11.2026.5.03.0001",
     "cliente": "Fulano de Tal (Reclamante)",
     "contrario": "Empresa Teste LTDA",
     "natureza": "Trabalhista",
@@ -76,7 +77,7 @@ DECISOES_SINTETICO = {
 
 RECURSO_SINTETICO = {
     "tipo_cadastro": "Recurso",
-    "cnj": "TESTE-E2E-AGENTE-0000002-22.2026.5.03.0002",
+    "cnj": "TESTE-AGENTE-0000002-22.2026.5.03.0002",
     "cliente": "Ciclana Souza",
     "contrario": "Banco Teste S/A (CNPJ 00.000.000/0001-00)",
     "natureza": "Trabalhista",
@@ -95,7 +96,7 @@ RECURSO_SINTETICO = {
 
 ARQUIVAMENTO_COMPLETO_SINTETICO = {
     "tipo_cadastro": "Arquivamento Completo",
-    "cnj": "TESTE-E2E-AGENTE-0000003-33.2026.5.03.0003",
+    "cnj": "TESTE-AGENTE-0000003-33.2026.5.03.0003",
     "cliente": "Escritorio Teste Advocacia",
     "contrario": "Sicrano de Souza",
     "natureza": "Civel",
@@ -113,7 +114,7 @@ ARQUIVAMENTO_COMPLETO_SINTETICO = {
 
 ARQUIVAMENTO_SIMPLES_SINTETICO = {
     "tipo_cadastro": "Arquivamento Simples",
-    "cnj": "TESTE-E2E-AGENTE-0000004-44.2026.5.03.0004",
+    "cnj": "TESTE-AGENTE-0000004-44.2026.5.03.0004",
     "cliente": "Beltrana Costa",
     "contrario": "Comercio Teste ME",
     "natureza": "Civel",
