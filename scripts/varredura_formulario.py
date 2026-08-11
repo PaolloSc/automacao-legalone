@@ -9,6 +9,12 @@ Uso:
   python scripts/varredura_formulario.py [url]
 
 Sem url, usa a do ultimo rascunho que falhou. Salva em docs/varredura/.
+
+Serve para as duas UIs. Para inventariar a ficha classica (Novajus) e mapear
+mais campos do Forms -> LegalOne, abra a tela de ALTERACAO de um processo:
+  python scripts/varredura_formulario.py \\
+    https://carvalhofurtadoadv.novajus.com.br/processos/processos/edit/<ID>
+O JSON sai com painel/label/id/name/opcoes de cada controle.
 """
 import json
 import sys
@@ -32,10 +38,26 @@ JS_CAMPOS = """
 () => {
   const norm = (s) => (s || '').trim();
   const acharLabel = (el) => {
+    // UI nova (Angular/bento)
     const grupo = el.closest('.form-group, .bento-form-group, [class*="form-group"], bento-form-field');
-    if (!grupo) return null;
-    const lab = grupo.querySelector('label, .bento-label, [class*="label"]');
-    return lab ? norm(lab.innerText || lab.textContent) : null;
+    if (grupo) {
+      const lab = grupo.querySelector('label, .bento-label, [class*="label"]');
+      if (lab) return norm(lab.innerText || lab.textContent);
+    }
+    // UI classica (Novajus): <div class="header"><label for="Id">
+    if (el.id) {
+      const por = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+      if (por) return norm(por.innerText || por.textContent);
+    }
+    const linha = el.closest('.span1, .span2, .span3, .row');
+    const lab2 = linha && linha.querySelector('.header label, label');
+    return lab2 ? norm(lab2.innerText || lab2.textContent) : null;
+  };
+  // Painel da ficha classica ('Valores', 'Previsao e resultado', ...)
+  const acharPainel = (el) => {
+    const p = el.closest('.edit-panel-responsive-wrapper');
+    const t = p && p.querySelector('.panel-title');
+    return t ? norm(t.innerText || t.textContent) : null;
   };
   const classesNg = (el) => Array.from(el.classList).filter(c => c.startsWith('ng-'));
   const saida = [];
@@ -47,8 +69,15 @@ JS_CAMPOS = """
       const host = tag.startsWith('bento') ? el : (el.closest('bento-combobox') || el);
       saida.push({
         tag,
+        painel: acharPainel(el),
         label: acharLabel(el),
         id: input.id || null,
+        name: input.name || null,
+        tipo: input.type || null,
+        // select: as opcoes (value/texto) que o mapeamento precisa
+        opcoes: tag === 'select'
+          ? Array.from(el.options).map(o => ({v: o.value, t: norm(o.text)})).slice(0, 40)
+          : null,
         formcontrolname: host.getAttribute('formcontrolname')
                       || input.getAttribute('formcontrolname') || null,
         // o que aparece na tela

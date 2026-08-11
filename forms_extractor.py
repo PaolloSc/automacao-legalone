@@ -927,6 +927,19 @@ class FormsExtractor:
             logger.warning(f"[NAV] Erro ao navegar para resposta #{numero}: {e}")
             return False
 
+    async def _resposta_atual_vazia(self) -> bool:
+        """True quando a resposta na tela nao tem nenhuma pergunta respondida."""
+        try:
+            itens = await self._extrair_todas_perguntas_forms()
+        except Exception:
+            return False
+        if not itens:
+            return True
+        return not any(
+            (item.get('marcadas') or (item.get('resposta_texto') or '').strip())
+            for item in itens
+        )
+
     async def _ir_para_ultima_resposta(self) -> int | None:
         """Pula para o último número conhecido (contador) e avança com a seta até a última resposta.
 
@@ -941,8 +954,18 @@ class FormsExtractor:
         # Passo 1: Pula direto para o último número conhecido
         # ponytail: piso fixo em 830 (as respostas antigas ja foram cadastradas).
         # Trocar por FORMS_RESPOSTA_MINIMA quando o Forms passar dessa faixa.
-        ultimo_salvo = max(self.ler_ultimo_numero() or 0,
-                           int(os.getenv('FORMS_RESPOSTA_MINIMA', '830')))
+        # Trava de alvo: com FORMS_RESPOSTA_FIXA o bot abre exatamente essa
+        # resposta e NAO anda para frente. Serve para reprocessar uma resposta
+        # especifica — o e-mail do Forms nao diz qual e' a dele, e a busca
+        # normal sempre cai na ultima do formulario.
+        fixa = os.getenv('FORMS_RESPOSTA_FIXA', '').strip()
+        if fixa.isdigit():
+            logger.warning(f"[NAV] FORMS_RESPOSTA_FIXA={fixa} — abrindo essa resposta e nao avancando")
+            await self._navegar_para_resposta(int(fixa))
+            return int(fixa)
+
+        piso = int(os.getenv('FORMS_RESPOSTA_MINIMA', '830'))
+        ultimo_salvo = max(self.ler_ultimo_numero() or 0, piso)
         logger.info(f"[NAV] 🔄 Pulando para resposta #{ultimo_salvo} (último processado)...")
         await self._navegar_para_resposta(ultimo_salvo)
 
@@ -964,9 +987,30 @@ class FormsExtractor:
 
         numero = await self._obter_numero_resposta_atual()
 
-        # Passo 3: Salva o número atual para a próxima execução
-        if numero is not None:
+        # O Forms aceita numero acima do total e mostra uma resposta VAZIA em
+        # vez de recusar. Nesse caso o extrator raspava uma pagina sem nenhuma
+        # marcacao — e o METODO 5 do DOM chegou a inventar a ultima opcao de
+        # cada lista como se fosse a resposta. Volta ate achar conteudo.
+        for _ in range(5):
+            if not await self._resposta_atual_vazia():
+                break
+            anterior = (numero or ultimo_salvo) - 1
+            logger.warning(
+                f"[NAV] Resposta #{numero} esta vazia — voltando para #{anterior}"
+            )
+            if anterior < piso or not await self._navegar_para_resposta(anterior):
+                break
+            numero = await self._obter_numero_resposta_atual() or anterior
+
+        # Passo 3: Salva o número atual para a próxima execução. Numero
+        # implausivel (o campo 'Entrevistado' ja devolveu 2 e 6) nao entra no
+        # contador: o piso mascarava, mas o arquivo virava lixo.
+        if numero is not None and numero >= piso:
             self.salvar_proximo_numero(numero)
+        elif numero is not None:
+            logger.warning(
+                f"[COUNTER] Numero implausivel (#{numero} < piso {piso}) — contador mantido"
+            )
 
         if avancos > 0:
             logger.info(f"[NAV] ✅ Chegou na última resposta (#{numero}) após {avancos} avanço(s) a partir de #{ultimo_salvo}")
@@ -1019,13 +1063,14 @@ class FormsExtractor:
         return 639
 
     def salvar_proximo_numero(self, numero_atual):
-        """
-        Salva o próximo número a ser processado no arquivo
+        """Salva o numero da ULTIMA resposta lida (nao 'ultima + 1').
 
-        Args:
-            numero_atual: Número que acabou de ser processado
+        O salto do proximo ciclo usa esse valor como ponto de partida e
+        avanca com a seta. Guardando ultima+1 o salto caia numa resposta
+        inexistente — e o Forms nao recusa: mostra uma resposta VAZIA
+        (10/08/2026: contador em 838 com a 837 sendo a ultima).
         """
-        proximo = numero_atual + 1
+        proximo = numero_atual
         try:
             with open(self.counter_file, 'w', encoding='utf-8') as f:
                 f.write(str(proximo))
@@ -2164,8 +2209,13 @@ class FormsExtractor:
                                     }
                                 });
                                 
-                                // MÉTODO 5: Se não encontrou selecionadas mas tem answerText, usa ele
-                                if (selected.length === 0 && answerText && answerText.length > 0) {
+                                // MÉTODO 5: Se não encontrou selecionadas mas tem answerText, usa ele.
+                                // So vale para pergunta SEM opcoes (texto livre): numa
+                                // pergunta de escolha o answerText casava com a ultima
+                                // opcao da lista e o bot marcava 'TST'/'Acordo'/'Arquivado'
+                                // como se fossem a resposta (10/08/2026).
+                                if (selected.length === 0 && options.length === 0 &&
+                                    answerText && answerText.length > 0) {
                                     const respostas = answerText.split(/[,\\n]/).map(r => r.trim()).filter(r => r.length > 0);
                                     respostas.forEach(r => {
                                         if (r.length < 100) {

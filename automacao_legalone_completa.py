@@ -55,6 +55,7 @@ except Exception:
     ENHANCED_DISPONIVEL = False
 
 from legalone_cadastro import LegalOneCadastro
+from forms_mapping import TIPO_TAREFA_POR_CADASTRO, detectar_tipo_cadastro
 
 try:
     from claude_brain import ClaudeBrain
@@ -85,6 +86,63 @@ def _id_opcional(valor):
     if valor in (None, ""):
         return None
     return int(valor)
+
+
+def rotulos_email_sucesso(
+    dados_processo: dict | None,
+    pasta_existente: str | None = None,
+) -> dict:
+    """Assunto/titulo/verbo do e-mail OK conforme o tipo da tarefa.
+
+    Decisao e cadastro inicial nao podem sair com o mesmo '[OK CADASTRO]':
+    o log de 10/08 (CNJ 0013231) mostrou DECISOES → DECISAO no Forms e o
+    e-mail ainda dizia 'cadastro concluido' com Pasta N/A.
+    """
+    dados = dados_processo or {}
+    cnj = dados.get('cnj') or 'N/A'
+    pasta = dados.get('numero_pasta') or 'N/A'
+    tipo = (
+        dados.get('tipo_tarefa_identificada')
+        or dados.get('tipo_cadastro_canonico')
+        or ''
+    )
+    tipo_u = str(tipo).strip().upper()
+
+    if pasta_existente:
+        return {
+            'titulo': f"ℹ️ Já cadastrado — nada a fazer ({pasta_existente})",
+            'verbo': 'Já cadastrado, nada a fazer',
+            'assunto': f"[JA CADASTRADO] CNJ {cnj} — nada a fazer ({pasta_existente})",
+            'tipo_label': 'Já cadastrado',
+        }
+
+    if tipo_u in ('DECISAO', 'DECISOES', 'DECISÕES'):
+        return {
+            'titulo': '✅ Decisão registrada',
+            'verbo': 'Decisão registrada',
+            'assunto': f"[OK DECISAO] Pasta {pasta} — CNJ {cnj} — decisão registrada",
+            'tipo_label': 'Decisão',
+        }
+    if 'ARQUIV' in tipo_u:
+        return {
+            'titulo': '✅ Arquivamento concluído',
+            'verbo': 'Arquivamento concluído',
+            'assunto': f"[OK ARQUIVAMENTO] Pasta {pasta} — CNJ {cnj} — arquivamento concluído",
+            'tipo_label': 'Arquivamento',
+        }
+    if tipo_u == 'RECURSO':
+        return {
+            'titulo': '✅ Recurso registrado',
+            'verbo': 'Recurso registrado',
+            'assunto': f"[OK RECURSO] Pasta {pasta} — CNJ {cnj} — recurso registrado",
+            'tipo_label': 'Recurso',
+        }
+    return {
+        'titulo': '✅ Cadastro concluído',
+        'verbo': 'Cadastro concluído',
+        'assunto': f"[OK CADASTRO] Pasta {pasta} — CNJ {cnj} — cadastro concluído",
+        'tipo_label': 'Cadastro inicial',
+    }
 
 
 class AutomacaoLegalOne:
@@ -706,25 +764,27 @@ class AutomacaoLegalOne:
                 except Exception as e:
                     logger.warning(f"[BRAIN] Erro na classificação IA: {e} — usando fallback regras")
 
-            # Fallback: classificação por regras simples
-            if tipo_tarefa == "GENERICO" and not classificacao_ia:
-                tipo_cadastro = str(dados_processo.get('tipo_cadastro', '')).upper()
+            # O tipo escolhido no Forms manda mais que o palpite da IA: e' resposta
+            # do usuario, nao inferencia. A comparacao por string crua aqui casava
+            # 'DECISÃO' contra o valor real 'DECISÕES' e nunca batia — decisao caia
+            # em GENERICO e ia parar no fluxo de cadastro inicial.
+            canonico = detectar_tipo_cadastro(dados_processo.get('tipo_cadastro'))
+            if canonico:
+                tipo_tarefa = TIPO_TAREFA_POR_CADASTRO[canonico]
+                dados_processo['tipo_cadastro_canonico'] = canonico
+                logger.info(f"\n[REGRAS] Identificado pelo Forms: {canonico} → {tipo_tarefa}")
+            elif tipo_tarefa == "GENERICO":
                 fase = str(dados_processo.get('fase', '')).upper()
-
-                if 'CADASTRO INICIAL' in tipo_cadastro:
-                    tipo_tarefa = "CADASTRO_INICIAL"
-                    logger.info("\n[REGRAS] 🟢 Identificado: CADASTRO INICIAL")
-                elif 'RECURSO' in tipo_cadastro or 'RECURSAL' in fase:
+                if 'RECURSAL' in fase:
                     tipo_tarefa = "RECURSO"
-                    logger.info("\n[REGRAS] 🟡 Identificado: RECURSO")
-                elif 'DECISÃO' in tipo_cadastro or 'DECISÓRIA' in fase:
+                elif 'DECISÓRIA' in fase or 'DECISORIA' in fase:
                     tipo_tarefa = "DECISAO"
-                    logger.info("\n[REGRAS] 🔵 Identificado: DECISÃO")
-                elif 'ARQUIVAMENTO' in tipo_cadastro or 'ARQUIVADO' in fase:
+                elif 'ARQUIVADO' in fase:
                     tipo_tarefa = "ARQUIVAMENTO"
-                    logger.info("\n[REGRAS] ⚫ Identificado: ARQUIVAMENTO")
-                else:
-                    logger.info(f"\n[REGRAS] ⚪ Não classificado. (Tipo: {tipo_cadastro}, Fase: {fase})")
+                logger.info(
+                    f"\n[REGRAS] Sem tipo_cadastro reconhecido "
+                    f"(bruto: {dados_processo.get('tipo_cadastro')!r}, fase: {fase}) → {tipo_tarefa}"
+                )
 
             # Adiciona classificação aos dados para uso no LegalOne
             dados_processo['tipo_tarefa_identificada'] = tipo_tarefa
@@ -746,7 +806,10 @@ class AutomacaoLegalOne:
             # ATENÇÃO: Método agora é síncrono para manter navegador aberto!
             # Antes: sucesso = asyncio.run(self.legalone.cadastrar_processo(dados_processo))
             sucesso = False
-            if escolher_cadastro() == "api":
+            # A API so sabe criar processo. Decisao/recurso/arquivamento sao
+            # operacoes sobre processo existente: por aqui virariam cadastro
+            # novo, ignorando o tipo que o Forms informou.
+            if tipo_tarefa in ("GENERICO", "CADASTRO_INICIAL") and escolher_cadastro() == "api":
                 from config_automacao import LEGALONE_API_CONFIG as _api_cfg
                 from legalone_api_cadastro import LegalOneApiCadastro
 
@@ -781,7 +844,18 @@ class AutomacaoLegalOne:
                     logger.info(f"\n[OK] JA CADASTRADO — nada a fazer (pasta: {pasta_existente})")
                 else:
                     self.stats['processos_cadastrados'] += 1
-                    logger.info("\n[OK] PROCESSO CADASTRADO!")
+                    tipo_ok = (
+                        dados_processo.get('tipo_tarefa_identificada') or ''
+                    ).upper()
+                    if tipo_ok == 'DECISAO':
+                        logger.info(
+                            f"\n[OK] DECISAO REGISTRADA!"
+                            f" (pasta: {dados_processo.get('numero_pasta') or 'N/A'})"
+                        )
+                    elif 'ARQUIV' in tipo_ok:
+                        logger.info("\n[OK] ARQUIVAMENTO CONCLUIDO!")
+                    else:
+                        logger.info("\n[OK] PROCESSO CADASTRADO!")
                 self.salvar_log_sucesso(email_data, dados_processo)
                 try:
                     self._enviar_email_sucesso(email_data, dados_processo)
@@ -1002,7 +1076,7 @@ class AutomacaoLegalOne:
     # Notificação de SUCESSO por email (espelho de _enviar_email_erro)
     # ------------------------------------------------------------------
     def _enviar_email_sucesso(self, email_data: dict, dados_processo: dict) -> None:
-        """Envia email de confirmação de cadastro bem-sucedido."""
+        """Envia email de confirmação de cadastro/decisão bem-sucedido."""
         email_data = email_data or {}
         dados_processo = dados_processo or {}
 
@@ -1075,16 +1149,16 @@ class AutomacaoLegalOne:
             getattr(self.legalone, '_pasta_existente', None)
             if getattr(self.legalone, '_ja_cadastrado_nada_a_fazer', False) else None
         )
-        titulo = (
-            f"ℹ️ Já cadastrado — nada a fazer ({pasta_existente})" if pasta_existente
-            else "✅ Cadastro concluído"
-        )
+        rotulos = rotulos_email_sucesso(dados_processo, pasta_existente)
+        titulo = rotulos['titulo']
+        tipo_label = rotulos['tipo_label']
 
         html = f"""
 <html><body style="font-family:Arial,sans-serif;font-size:14px;">
 <h2 style="color:#0a7a28;">{titulo} — LegalOne</h2>
 <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;">
   <tr><th align="left">Data/Hora</th><td>{timestamp}</td></tr>
+  <tr><th align="left">Tipo</th><td>{tipo_label}</td></tr>
   <tr><th align="left">CNJ</th><td>{cnj}</td></tr>
   <tr><th align="left">Pasta</th><td>{pasta}</td></tr>
   <tr><th align="left">Cliente</th><td>{cliente}</td></tr>
@@ -1099,11 +1173,11 @@ class AutomacaoLegalOne:
 """
 
         texto = (
-            f"{'Já cadastrado, nada a fazer' if pasta_existente else 'Cadastro concluído'}"
-            f" - LegalOne\n\n"
+            f"{rotulos['verbo']} - LegalOne\n\n"
             + (f"Pasta existente: {pasta_existente}\n" if pasta_existente else "")
             +
-            f"Data/Hora: {timestamp}\nCNJ: {cnj}\nPasta: {pasta}\nCliente: {cliente}\n"
+            f"Data/Hora: {timestamp}\nTipo: {tipo_label}\nCNJ: {cnj}\nPasta: {pasta}\n"
+            f"Cliente: {cliente}\n"
             f"Contrário: {contrario}\nForms: {link}\n"
             f"Pedidos: {preenchidos}/{total}\n"
             f"QA Warnings: {len(qa_warnings)}\n"
@@ -1112,11 +1186,7 @@ class AutomacaoLegalOne:
 
         notificacao = {
             'cnj': cnj,
-            'subject': (
-                f"[JA CADASTRADO] CNJ {cnj} — nada a fazer ({pasta_existente})"
-                if pasta_existente
-                else f"[OK CADASTRO] Pasta {pasta} — CNJ {cnj} — cadastro concluído"
-            ),
+            'subject': rotulos['assunto'],
             'text': texto,
             'html': html,
             'to': self._destinatarios_erro(),

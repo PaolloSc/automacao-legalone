@@ -721,12 +721,22 @@ def _normalizar_entrada_perguntas(dados: Any) -> list[dict[str, Any]]:
             itens.extend(item for item in dados["perguntas_forms"] if isinstance(item, dict))
         outros = dados.get("outros_dados") or {}
         if isinstance(outros, dict):
+            # 'outros_dados' vem da varredura do DOM, que erra a opcao marcada
+            # de vez em quando. Quando a extracao estruturada ja respondeu a
+            # pergunta, ela manda: sem isso as duas respostas iam para o mesmo
+            # indice e viravam 'Exito total | Perda' (10/08/2026).
+            ja_respondidas = {
+                normalizar_pergunta(item.get("pergunta"))
+                for item in itens
+                if _extrair_resposta(item)
+            }
             itens.extend(
                 {
                     "pergunta": pergunta,
                     "resposta": resposta,
                 }
                 for pergunta, resposta in outros.items()
+                if normalizar_pergunta(pergunta) not in ja_respondidas
                 # normalizar_texto remove acentos, então usar formas sem acento
                 if " - opcoes" not in normalizar_texto(pergunta)
                 and " - marcadas" not in normalizar_texto(pergunta)

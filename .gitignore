@@ -42,3 +42,6 @@ __pycache__/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Transcricoes de sessao do agente (contexto bruto, nao e fonte)
+docs/jurimetria/*.txt

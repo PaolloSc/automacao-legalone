@@ -132,6 +132,27 @@ def clicar_opcao(texto: str, papeis: tuple = ("list item", "menu item", "option"
         {"pid": pid, "window_id": wid, "element_index": el["element_index"]},
         timeout=30,
     )
+    if ok is None:
+        # 'Element N not in cache': a arvore mudou entre o snapshot e o clique
+        # (a tela do LegalOne se reorganiza sozinha). Um snapshot novo resolve.
+        logger.info("[CUA] indice invalidado — refazendo o snapshot e clicando de novo")
+        st2 = _call(
+            "get_window_state",
+            {"pid": pid, "window_id": wid, "include_screenshot": False, "max_elements": 3000},
+            timeout=120,
+        )
+        alvo_lbl = _norm(el.get("label"))
+        novo_idx = next(
+            (e.get("element_index") for e in (st2 or {}).get("elements", [])
+             if _norm(e.get("label")) == alvo_lbl and e.get("element_index") is not None),
+            None,
+        )
+        if novo_idx is not None:
+            ok = _call(
+                "click",
+                {"pid": pid, "window_id": wid, "element_index": novo_idx},
+                timeout=30,
+            )
     logger.info(
         f"[CUA] Click [{el.get('role')}] '{(el.get('label') or '')[:60]}' -> {'OK' if ok else 'FALHOU'}"
     )

@@ -306,7 +306,14 @@ class OutlookMonitorGraph:
                 hora_atual = datetime.now().strftime("%H:%M:%S")
                 logger.info(f"\n[VERIFICA] Verificando emails... [{hora_atual}]")
 
-                emails = self.buscar_novos_emails(minutos_atras=self.janela_minutos)
+                # ponytail: erro de rede so pula o ciclo — antes um reset de TCP
+                # (WinError 10054) na Graph matava a automacao inteira.
+                try:
+                    emails = self.buscar_novos_emails(minutos_atras=self.janela_minutos)
+                except requests.RequestException as e:
+                    logger.warning(f"[REDE] Falha ao consultar Graph, tentando de novo no proximo ciclo: {e}")
+                    emails = []
+
                 for email_data in emails:
                     try:
                         logger.info(f"\n[PROCESSA] Processando: {email_data['subject']}")

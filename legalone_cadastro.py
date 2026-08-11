@@ -50,6 +50,19 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# O passo a passo do cadastro so ia pro console: quando o bot roda como
+# servico, investigar depois e' impossivel. Um arquivo proprio resolve.
+try:
+    if 'pytest' in sys.modules:
+        raise OSError('sob pytest: nao suja o log do bot')
+    _fh = logging.FileHandler(
+        Path(__file__).with_name('legalone_cadastro.log'), encoding='utf-8'
+    )
+    _fh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    logger.addHandler(_fh)
+except OSError:
+    pass
+
 PEDIDOS_SINONIMOS = {
     "verbas rescisórias": ["verbas rescisorias", "rescisão", "rescisao contratual", "verbas trabalhistas"],
     "horas extras": ["hora extra", "he", "horas extraordinárias"],
@@ -652,6 +665,52 @@ class LegalOneCadastro:
             )
         except Exception:
             return None
+
+    def _capturar_numero_pasta(self, dados_processo) -> str | None:
+        """Grava `numero_pasta` (ex.: 'Proc - 0007344') para o e-mail de sucesso.
+
+        Cadastro inicial le o campo Pasta do formulario. Decisao nao passa por
+        aquele bloco — mas o titulo da edicao traz 'Alterando processo: Proc -
+        0006136'. Sem isso o e-mail sai com Pasta N/A.
+        """
+        if not isinstance(dados_processo, dict):
+            return None
+        ja = (dados_processo.get('numero_pasta') or '').strip()
+        if ja and ja.upper() not in ('N/A', 'NA', '-'):
+            return ja
+
+        candidatos: list[str] = []
+        try:
+            pasta_campo = self._valor_limpo(self._ler_valor_campo_formulario('Pasta'))
+            if pasta_campo:
+                candidatos.append(pasta_campo)
+        except Exception:
+            pass
+        try:
+            titulo = (self.page.title() if self.page else '') or ''
+            if titulo:
+                candidatos.append(titulo)
+        except Exception:
+            pass
+
+        for bruto in candidatos:
+            m = re.search(r'Proc\s*-\s*\d+', bruto or '')
+            if m:
+                pasta = m.group(0)
+                dados_processo['numero_pasta'] = pasta
+                logger.info(f"   [PASTA] {pasta}")
+                return pasta
+
+        for bruto in candidatos:
+            limpo = (bruto or '').strip()
+            if limpo and limpo.upper() not in ('N/A', 'NA', '-') and len(limpo) < 80:
+                # Campo Pasta as vezes vem so com o numero, sem o prefixo Proc.
+                if re.fullmatch(r'\d{4,}', limpo):
+                    limpo = f"Proc - {limpo}"
+                dados_processo['numero_pasta'] = limpo
+                logger.info(f"   [PASTA] {limpo}")
+                return limpo
+        return None
 
     def _clicar_ver_rascunhos_se_disponivel(self, timeout_ms: int = 2500) -> bool:
         """Clica no botão 'Ver em rascunhos' quando o modal de captura aparece."""
@@ -1387,6 +1446,95 @@ class LegalOneCadastro:
         except Exception:
             return False
 
+    def _expandir_painel(self, titulo: str) -> str:
+        """Abre o painel recolhido da tela de alteracao (ex.: 'Previsao e
+        resultado'). Campo dentro de painel fechado nao e' visivel, e o
+        preenchimento por label conclui "campo nao encontrado".
+        """
+        try:
+            estado = self.page.evaluate(
+                """
+                (titulo) => {
+                    const norm = s => (s || '').toLowerCase()
+                        .normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+                    const alvo = Array.from(document.querySelectorAll(
+                        '.panel-title, .panel-heading, .accordion-toggle'
+                    )).find(p => norm(p.innerText).includes(norm(titulo)));
+                    if (!alvo) return 'sem-painel';
+                    const painel = alvo.closest('.panel, .panel-default, section, fieldset, div');
+                    const corpo = painel && painel.querySelector(
+                        '.panel-body, .panel-content, .accordion-body, .content'
+                    );
+                    const aberto = corpo && corpo.offsetParent !== null &&
+                        corpo.getBoundingClientRect().height > 10;
+                    if (aberto) return 'ja-aberto';
+                    alvo.click();
+                    return 'clicado';
+                }
+                """,
+                titulo,
+            )
+        except Exception as e:
+            logger.warning(f"   ⚠ Falha ao expandir painel '{titulo}': {e}")
+            return 'erro'
+        logger.info(f"   ↪ Painel '{titulo}': {estado}")
+        if estado == 'clicado':
+            time.sleep(1.0)
+        return estado
+
+    def _fallback_cua_campo(self, label: str, valor: str) -> bool:
+        """Preenche pelo cua-driver quando o Playwright nao acha/nao commita.
+
+        Serve para lookup e para texto: foca o campo pela arvore de
+        acessibilidade, digita, e clica a opcao se o dropdown abrir.
+        """
+        if not valor:
+            return False
+        try:
+            import cua_fallback
+            if not cua_fallback.disponivel():
+                logger.warning(f"   [CUA] indisponivel - sem fallback para '{label}'")
+                return False
+        except Exception as e:
+            logger.warning(f"   [CUA] import falhou ({e}) - sem fallback para '{label}'")
+            return False
+        try:
+            cua_fallback.titulo_alvo = self.page.title() or ''
+        except Exception:
+            cua_fallback.titulo_alvo = ''
+        logger.info(f"   [CUA] preenchendo '{label}' = {valor!r}...")
+        if not cua_fallback.clicar_campo(label):
+            logger.warning(f"   [CUA] nao achou o campo '{label}' na arvore")
+            return False
+        time.sleep(0.8)
+        try:
+            self.page.keyboard.type(str(valor)[:60], delay=40)
+        except Exception as e:
+            logger.warning(f"   [CUA] falha ao digitar em '{label}': {e}")
+            return False
+        time.sleep(2)
+        if not cua_fallback.clicar_opcao(str(valor)):
+            # Campo de texto nao tem lista: Tab commita o que foi digitado.
+            try:
+                self.page.keyboard.press('Tab')
+            except Exception:
+                pass
+        time.sleep(0.8)
+        atual = self._valor_limpo(self._ler_valor_campo_formulario(label)) or ''
+        if atual:
+            logger.info(f"   [CUA] '{label}' commitou: {atual!r}")
+            return True
+        logger.warning(f"   [CUA] '{label}' continua vazio")
+        return False
+
+    _IDS_PAINEL_RESULTADO = {
+        'Tipo de resultado': 'TipoResultado',
+        'Resultado': 'Resultado',
+        'Motivo do resultado': 'MotivoResultado',
+        'Risco': 'Risco',
+        'Contingência': 'Contingencia',
+    }
+
     def _preencher_previsao_e_resultado(self, dados_processo: dict | None) -> bool:
         """Preenche previsão e resultado após os pedidos, quando informados.
 
@@ -1396,6 +1544,8 @@ class LegalOneCadastro:
         """
         dados = dados_processo or {}
         outros = dados.get('outros_dados') or {}
+
+        ambiguos: list[str] = []
 
         def obter(campo: str) -> str:
             valor = self._valor_limpo(dados.get(campo) or outros.get(campo))
@@ -1407,20 +1557,37 @@ class LegalOneCadastro:
                 'na',
             }:
                 return ''
+            # 'Exito total | Perda' e' resposta duplicada na extracao, nao
+            # escolha do usuario. Escolher uma delas seria inventar o
+            # resultado do processo: melhor parar e mandar tratar na mao.
+            if valor and ' | ' in str(valor):
+                ambiguos.append(f"{campo}={valor}")
+                return ''
             return valor
 
+        # Probabilidade (Exito/Perda) e o grau (Possivel/Provavel/Remota) NAO
+        # ficam no painel do processo: sao campos de cada linha de pedido
+        # (ProbabilidadeTipoId / ProbabilidadeText), preenchidos junto com a
+        # classificacao. Procura-los aqui por label so achava o texto da
+        # pergunta do Forms — nem Playwright nem cua-driver encontravam campo.
         campos_lista = (
             ('Contingência', obter('contingencia')),
-            ('Probabilidade atual', obter('probabilidade')),
-            ('Faixa de probabilidade atual', obter('grau_probabilidade')),
             ('Risco', obter('risco')),
             ('Tipo de resultado', obter('tipo_resultado')),
             ('Resultado', obter('resultado')),
         )
         campos_texto = (
-            ('Motivo do resultado', obter('motivo_resultado')),
+            ('Motivo do resultado', obter('motivo_resultado') or obter('motivo')),
         )
         data_resultado = self._normalizar_data_legalone(obter('data_resultado'))
+
+        if ambiguos:
+            self.last_error_reason = (
+                'Extracao trouxe duas respostas para o mesmo campo, nao da para '
+                'escolher sozinho: ' + '; '.join(ambiguos)
+            )
+            logger.error(f'   ❌ {self.last_error_reason}')
+            return False
 
         if not any(valor for _, valor in campos_lista + campos_texto) and not data_resultado:
             logger.info('   ℹ️ Previsão/resultado não informados; pulando etapa.')
@@ -1432,8 +1599,12 @@ class LegalOneCadastro:
         for label, valor in campos_lista:
             if not valor:
                 continue
-            seletor = self._encontrar_input_por_label_exato(label)
-            preencheu = False
+            # O id e' mais confiavel que o label: 'Motivo do resultado' tem
+            # outro texto na tela, e o fluxo de arquivamento ja endereçava
+            # esses campos por #<base>Text/#<base>Id.
+            id_base = self._IDS_PAINEL_RESULTADO.get(label)
+            preencheu = bool(id_base) and self._preencher_lookup_antigo(id_base, valor)
+            seletor = None if preencheu else self._encontrar_input_por_label_exato(label)
             if seletor:
                 preencheu = self.preencher_campo_autocomplete(
                     seletor,
@@ -1443,6 +1614,8 @@ class LegalOneCadastro:
                 )
             if not preencheu:
                 preencheu = self._fill_by_label(label, valor)
+            if not preencheu:
+                preencheu = self._fallback_cua_campo(label, valor)
             if preencheu:
                 logger.info(f'   ✓ {label}: {valor}')
             else:
@@ -1452,14 +1625,15 @@ class LegalOneCadastro:
         for label, valor in campos_texto:
             if not valor:
                 continue
-            if self._fill_by_label(label, valor):
+            if self._fill_by_label(label, valor) or self._fallback_cua_campo(label, valor):
                 logger.info(f'   ✓ {label} preenchido')
             else:
                 logger.warning(f'   ⚠️ Campo de previsão/resultado não encontrado: {label}')
                 falhas.append(label)
 
         if data_resultado:
-            if self._fill_by_label('Data do resultado', data_resultado):
+            if (self._fill_by_label('Data do resultado', data_resultado)
+                    or self._fallback_cua_campo('Data do resultado', data_resultado)):
                 logger.info(f'   ✓ Data do resultado: {data_resultado}')
             else:
                 logger.warning('   ⚠️ Campo de previsão/resultado não encontrado: Data do resultado')
@@ -6915,26 +7089,37 @@ class LegalOneCadastro:
             except Exception as e:
                 logger.debug(f"[LIMPEZA] erro: {e}")
 
-            # 6.1 Preencher demais campos da decisão (Resultado, Tipo de
-            # resultado, Motivo resultado, Risco, Probabilidade, Data do
-            # resultado, Data da sentença, Data da Citação, Cobrança de
-            # honorários sucumbenciais, Justificativa, etc.) a partir do
-            # Forms (campos vivem em `outros_dados`).
+            # 6.1 Registrar a decisao. Antes rodava aqui o
+            # `preencher_detalhes_faltantes`, que e' o preenchedor generico do
+            # cadastro inicial (LLM varrendo a tela + heuristica de label em
+            # <input> simples). Numa tela Kendo isso mexia na ficha do processo
+            # e nao gravava resultado nenhum: o processo saia "alterado" e a
+            # decisao, nao registrada.
             logger.info(
-                "[DECISÃO] 6.1ï¸âƒ£ Preenchendo demais campos da decisão "
-                "(resultado, risco, probabilidade, datas, honorários)..."
+                "[DECISAO] 6.1 Registrando a decisao (situacao dos pedidos, "
+                "resultado, risco/probabilidade, datas)..."
             )
-            try:
-                self.preencher_detalhes_faltantes(dados_processo)
-            except Exception as e:
-                logger.warning(
-                    f"[DECISÃO] Falha ao preencher campos adicionais: {e}"
+            if not self._registrar_decisao(dados_processo):
+                logger.error(
+                    "[DECISAO] Nada da decisao entrou no formulario - nao vou "
+                    "salvar uma alteracao vazia e chamar de sucesso."
                 )
+                if not self.last_error_reason:
+                    self.last_error_reason = (
+                        "Decisao nao registrada: campos de resultado nao foram "
+                        "preenchidos no LegalOne"
+                    )
+                return False
+
+            # Pasta p/ e-mail: o titulo da edicao ja tem "Proc - NNNNN" (ex.:
+            # "Alterando processo: Proc - 0006136"). Sem isso o OK sai N/A.
+            self._capturar_numero_pasta(dados_processo)
 
             # 7. Salvar
             logger.info("[DECISÃO] 7ï¸âƒ£ Salvando alterações...")
             salvo = self._clicar_salvar_decisao(dados_processo)
             if salvo:
+                self._capturar_numero_pasta(dados_processo)
                 logger.info(
                     "\n✅ [DECISÃO] Fluxo de Decisão concluído com sucesso!"
                 )
@@ -6946,87 +7131,1373 @@ class LegalOneCadastro:
                 )
                 return False
 
+        except NavegadorFechado as e:
+            logger.error(f"⛔ Decisao abortada: {e}")
+            self.last_error_reason = (
+                f"{e} - o registro da decisao precisa do Chrome aberto do inicio "
+                "ao fim; nao feche a janela durante o ciclo"
+            )
+            self._registrar_diagnostico_falha("Navegador fechado na decisao", str(e))
+            return False
         except Exception as e:
             logger.error(f"[DECISÃO] Erro no fluxo: {e}")
             self._registrar_diagnostico_falha("Fluxo Decisao", str(e))
             return False
 
     def _alterar_fase_processo(self, fase_desejada: str) -> bool:
-        """Altera o campo FaseText no formulário de edição do processo."""
+        """Fase na tela de alteracao: lookup #FaseText/#FaseId.
+
+        Antes isso procurava a opcao em '.k-list-container'/'ul.ui-autocomplete'
+        (widgets de outra tela), dava Enter e logava sucesso sem nunca gravar o
+        FaseId — a fase parecia trocada e nao salvava (10/08/2026).
+        """
         if not fase_desejada:
             return False
-        try:
-            # Tenta pelo id FaseText
-            fase_input = self.page.wait_for_selector(
-                '#FaseText, input[name="FaseText"], input[id*="FaseText"]',
-                state='visible',
-                timeout=5000,
+        if self._preencher_lookup_por_id('FaseText', 'FaseId', fase_desejada):
+            logger.info(f"   ✓ Fase: {fase_desejada}")
+            return True
+        if self._garantir_preenchimento_campo_texto('Fase', fase_desejada):
+            logger.info(f"   ✓ Fase alterada via label: {fase_desejada}")
+            return True
+        logger.warning(f"   ⚠ Fase '{fase_desejada}' nao foi gravada")
+        return False
+
+    # Ids reais do painel 'Previsao e resultado' (HTML conferido 10/08/2026).
+    _PAINEL_SELECTS = (
+        ('ContingenciaTipoId', 'contingencia',
+         {'ativa': '0', 'passiva': '1', 'sem contingencia': '2'}),
+        ('ProbabilidadeTipoId', 'probabilidade', {'exito': '0', 'perda': '1'}),
+    )
+    _PAINEL_LOOKUPS = (
+        ('Probabilidade', 'grau_probabilidade'),   # Possivel / Provavel / Remota
+        ('Risco', 'risco'),
+        ('TipoResultado', 'tipo_resultado'),
+        ('Resultado', 'resultado'),
+        ('MotivoResultado', 'motivo_resultado', 'motivo'),
+    )
+    _PAINEL_DATAS = (
+        ('DataResultado', 'data_resultado'),
+        ('DataSentenca', 'data_sentenca'),
+    )
+
+    def _preencher_painel_resultado(self, obter) -> tuple[int, list[str]]:
+        """Preenche o painel de resultado pelos ids. Devolve (ok, falhas)."""
+        ok, falhas = 0, []
+
+        for id_campo, campo, opcoes in self._PAINEL_SELECTS:
+            valor = obter(campo)
+            if not valor:
+                continue
+            chave = self._normalizar_texto_busca(valor)
+            escolha = next(
+                (v for k, v in opcoes.items() if k in chave or chave in k), None
             )
-            if fase_input:
-                fase_input.click()
-                fase_input.fill('')
-                fase_input.type(fase_desejada, delay=30)
-                time.sleep(0.6)
-                # Tenta clicar na opção do popup do autocomplete (Kendo/dropdown)
+            if escolha is None:
+                logger.warning(f"   ⚠ {id_campo}: '{valor}' nao esta entre {list(opcoes)}")
+                falhas.append(id_campo)
+            elif self._selecionar_por_id(id_campo, escolha, id_campo):
+                ok += 1
+            else:
+                falhas.append(id_campo)
+
+        for entrada in self._PAINEL_LOOKUPS:
+            id_base, campos = entrada[0], entrada[1:]
+            valor = obter(*campos) if len(campos) > 1 else obter(campos[0])
+            if not valor:
+                continue
+            if self._preencher_lookup_por_id(f'{id_base}Text', f'{id_base}Id', valor):
+                ok += 1
+            else:
+                falhas.append(id_base)
+
+        for id_campo, campo in self._PAINEL_DATAS:
+            valor = obter(campo)
+            if not valor:
+                continue
+            if self._preencher_data_por_id(id_campo, valor):
+                ok += 1
+            else:
+                falhas.append(id_campo)
+
+        logger.info(f"   [PAINEL] {ok} campo(s) preenchido(s); falhas: {falhas or 'nenhuma'}")
+        return ok, falhas
+
+    def _registrar_decisao(self, dados_processo) -> bool:
+        """Grava a decisao na tela de alteracao do processo.
+
+        Reusa o que o arquivamento completo ja fazia certo: classificacao por
+        pedido, previsao/resultado e datas. Devolve False quando o Forms trouxe
+        decisao e nada entrou no formulario - salvar nesse caso produz um
+        "sucesso" que nao registrou decisao nenhuma.
+        """
+        dados = dados_processo or {}
+        outros = dados.get('outros_dados') or {}
+        ambiguos: list[str] = []
+
+        def obter(*campos):
+            for campo in campos:
+                valor = self._valor_limpo(dados.get(campo) or outros.get(campo))
+                if valor and not self._texto_forms_invalido(valor):
+                    # 'Possivel | Remota' e' duplicacao da extracao, nao
+                    # escolha do usuario: escolher a mais parecida seria
+                    # inventar o resultado do processo.
+                    if ' | ' in str(valor):
+                        ambiguos.append(f"{campo}={valor}")
+                        return ''
+                    return valor
+            return ''
+
+        # Completa lacunas (valor_causa) via DataJud antes de gravar na tela.
+        try:
+            self._enriquecer_dados_datajud(dados)
+        except Exception as e:
+            logger.warning(f"   [DATAJUD] enriquecimento ignorado: {e}")
+
+        campos_resultado = (
+            'resultado', 'tipo_resultado', 'motivo_resultado', 'data_resultado',
+            'risco', 'probabilidade', 'grau_probabilidade', 'contingencia',
+        )
+        campos_pedido = (
+            'situacao_pedido', 'valor_total_deferido', 'valor_deferido_por_pedido',
+            'motivo',
+        )
+        tem_resultado = any(obter(c) for c in campos_resultado)
+        tem_pedido = any(obter(c) for c in campos_pedido)
+        tem_decisao = tem_resultado or tem_pedido or bool(obter('data_sentenca'))
+
+        ok_pedidos, total_pedidos = self._preencher_classificacoes_pedidos(dados)
+        self._expandir_painel('Previsao e resultado')
+        ok_painel, falhas_painel = self._preencher_painel_resultado(obter)
+        ok_moedas, falhas_moedas = self._preencher_valores_monetarios(obter)
+        try:
+            self._preencher_ficha_forms(obter)
+        except NavegadorFechado:
+            raise
+        except Exception as e:
+            logger.warning(f"   [FICHA] ignorada: {e}")
+        if ambiguos:
+            self.last_error_reason = (
+                'Extracao trouxe duas respostas para o mesmo campo, nao da para '
+                'escolher sozinho: ' + '; '.join(sorted(set(ambiguos)))
+            )
+            logger.error(f'   ❌ {self.last_error_reason}')
+            return False
+        ok_resultado = not falhas_painel
+        ok_datas = ok_painel
+        if falhas_painel:
+            self.last_error_reason = (
+                'Campos do painel de resultado nao entraram: ' + ', '.join(falhas_painel)
+            )
+
+        if not tem_decisao:
+            logger.warning(
+                "   [DECISAO] Forms nao trouxe resultado nem pedidos - so a "
+                "fase foi alterada."
+            )
+            return True
+
+        logger.info(
+            f"   [DECISAO] pedidos={ok_pedidos}/{total_pedidos} "
+            f"resultado={'ok' if ok_resultado else 'falhou'} datas={ok_datas} "
+            f"moedas={ok_moedas}"
+        )
+
+        # Campos do Forms de DECISOES que este fluxo ainda nao sabe endereçar
+        # na tela. Sem o aviso, sumiriam em silencio.
+        # Os campos de honorarios sucumbenciais/contratuais sairam daqui em
+        # 11/08/2026: viraram entrada em `_PERSONALIZADOS_*`.
+        nao_mapeados = [
+            c for c in (
+                'houve_interposicao_recurso',
+            ) if obter(c)
+        ]
+        # Moedas que o Forms trouxe e a tela nao gravou
+        if falhas_moedas:
+            nao_mapeados.extend(f"moeda:{f}" for f in falhas_moedas)
+        if nao_mapeados:
+            logger.warning(
+                "   [DECISAO] Campos do Forms sem mapeamento na tela (tratar "
+                f"manualmente): {', '.join(nao_mapeados)}"
+            )
+
+        # Pedido classificado no Forms, linhas na tela e nenhuma preenchida:
+        # gravar assim registra meia decisao.
+        if tem_pedido and total_pedidos > 0 and ok_pedidos == 0:
+            self.last_error_reason = (
+                "Situacao/valores dos pedidos vieram no Forms mas nenhum pedido "
+                "foi classificado no LegalOne"
+            )
+            return False
+
+        # Resultado informado que nao entrou = decisao pela metade. O
+        # `_preencher_previsao_e_resultado` ja deixou em last_error_reason
+        # quais labels falharam.
+        if tem_resultado:
+            return ok_resultado
+        return ok_pedidos > 0 or ok_datas > 0 or ok_moedas > 0
+
+    # ------------------------------------------------------------------
+    # ARQUIVAMENTO COMPLETO
+    # ------------------------------------------------------------------
+    # 'VERBAS RESCISORIAS - R$ 2.000,00 MULTA ARTIGO 477 - R$ 1.000,00 ...':
+    # o Forms devolve os pares numa linha so, colados, e ainda com o rotulo da
+    # pergunta na frente. Quebrar por '\n' ou ';' via UMA linha e perdia tudo.
+    _RE_PAR_DEFERIDO = re.compile(
+        r'([^\n;|]{3,80}?)\s*[-–—:]\s*'
+        r'R?\$?\s*(\d{1,3}(?:\.\d{3})*,\d{2}|\d+(?:,\d{2})?)(?![\d.,])'
+    )
+
+    @staticmethod
+    def _nome_do_pedido_bruto(texto: str) -> str:
+        """Tira o rotulo da pergunta grudado no nome do primeiro pedido.
+
+        'Em caso de acordo, discriminar parcelas VERBAS RESCISORIAS' ->
+        'VERBAS RESCISORIAS'. O rotulo vem em caixa baixa; nome de pedido
+        comeca com maiuscula. Sobra no maximo 5 palavras.
+        """
+        palavras = [w for w in str(texto or '').split() if w.strip(' ,;:.-')]
+        palavras = palavras[-5:]
+        def so_rotulo(w: str) -> bool:
+            # '13o salario' e' nome de pedido; 'discriminar parcelas,' e' rotulo.
+            base = w.strip(' ,;:.-')
+            return bool(base) and base == base.lower() and base.isalpha()
+
+        while len(palavras) > 1 and so_rotulo(palavras[0]):
+            if not any(w != w.lower() for w in palavras[1:]):
+                break
+            palavras.pop(0)
+        return ' '.join(palavras)
+
+    @classmethod
+    def _parse_valores_deferidos(cls, texto) -> dict[str, str]:
+        """'VERBAS RESCISORIAS - R$ 2.000,00' -> {'verbas rescisorias': '2.000,00'}.
+
+        Pedido zerado fica de fora: 0,00 ja e' o default do campo no LegalOne.
+        """
+        if isinstance(texto, (list, tuple, set)):
+            texto = '\n'.join(str(t) for t in texto)
+        valores: dict[str, str] = {}
+        for bruto, valor in cls._RE_PAR_DEFERIDO.findall(str(texto or '')):
+            # Pedido zerado entra como 0,00: deixar em branco na tela e' o
+            # mesmo que 'nao informado' para quem le depois.
+            if valor.strip('0.,') == '':
+                valor = '0,00'
+            nome = _normalizar_pedido(cls._nome_do_pedido_bruto(bruto))
+            if nome:
+                valores[nome] = valor
+        return valores
+
+    # O Forms manda a resposta como texto ('Parcialmente deferido | Acordo'
+    # quando o pedido teve mais de uma marcacao). Isso nao e' um filtro de
+    # busca valido: digitado inteiro, o autocomplete nao acha nada.
+    # Abaixo disso o "melhor da lista" e' so o menos ruim, nao a
+    # resposta: 'Provas produzidas pelo RCTE' (fora do catalogo) virou
+    # 'Acordo homologado' com 0.31 em 8 pedidos (10/08/2026). Dado
+    # errado e' pior que campo vazio.
+    # O Forms abrevia o que o catalogo do LegalOne escreve por extenso:
+    # 'Provas produzidas pelo RCTE' x 'Provas produzidas pelo Reclamante'.
+    ABREVIACOES_LOOKUP = {'rcte': 'Reclamante'}
+
+    SEMELHANCA_MINIMA_LOOKUP = 0.6
+
+    _SEPARADOR_OPCOES = re.compile(r'\s*(?:\||;|\n)\s*')
+
+    # A lista suspensa da tela de alteracao e'
+    # `div.lookup-dropdown > .lookup-wrapper > table > tr[data-val-id]`; o
+    # `.ac_results li` do autocomplete antigo so aparece em outras telas.
+    _SELETORES_OPCAO_LOOKUP = (
+        '.lookup-dropdown:visible tr[data-val-id]',
+        '.ac_results li:visible',
+    )
+
+    @classmethod
+    def _expandir_abreviacoes(cls, texto: str) -> str:
+        palavras = [
+            cls.ABREVIACOES_LOOKUP.get(p.strip('.,;:').lower(), p)
+            for p in str(texto or '').split()
+        ]
+        return ' '.join(palavras)
+
+    def _opcoes_lookup_visiveis(self):
+        for seletor in self._SELETORES_OPCAO_LOOKUP:
+            try:
+                pares = [
+                    (el, (el.inner_text() or '').strip())
+                    for el in self.page.query_selector_all(seletor)
+                ]
+            except Exception:
+                continue
+            pares = [(el, t) for el, t in pares if t]
+            if pares:
+                return pares
+        return []
+
+    def _abrir_lista_lookup(self, campo, candidatos: list[str]):
+        """Abre a lista suspensa do lookup e devolve as opcoes visiveis.
+
+        Escolher na lista e' o que o LegalOne exige para gravar; digitar so
+        serve para estreitar uma lista longa, e mesmo assim com o comeco de
+        UMA opcao — o Forms manda duas coladas.
+        """
+        # Digitar+Enter PRIMEIRO. Abrir a lista completa (seta) antes disso
+        # devolvia opcoes na hora e a busca nunca acontecia: o catalogo inteiro
+        # aparecia em ordem alfabetica e o 'melhor da lista' virava 'Acordo
+        # homologado' para qualquer coisa (10/08/2026).
+        primeiro = candidatos[0] if candidatos else ''
+        palavras = primeiro.split()
+        tentativas = []
+        if palavras:
+            tentativas.append(' '.join(palavras[:3]))
+            tentativas.append(' '.join(palavras[:2]))
+            tentativas.append(palavras[0][:4])
+        tentativas.append(None)  # ultimo recurso: lista inteira
+        for prefixo in tentativas:
+            try:
+                campo.fill('')
+                if prefixo:
+                    campo.type(prefixo, delay=40)
+                    # A busca so dispara no Enter; sem ele a lista vinha sem
+                    # filtro e o 'melhor da lista' era qualquer coisa.
+                    campo.press('Enter')
+                else:
+                    # minChars=0: a seta abre a lista inteira sem filtrar.
+                    campo.press('ArrowDown')
+            except Exception:
+                continue
+            limite = time.time() + 4
+            while time.time() < limite:
+                opcoes = self._opcoes_lookup_visiveis()
+                if opcoes:
+                    return opcoes
+                time.sleep(0.25)
+        return []
+
+    def _preencher_lookup_por_id(self, id_text: str, id_hidden: str, valor: str,
+                                 busca: str | None = None) -> bool:
+        """Lookup jQuery da tela de alteracao, endereçado pelo id do input.
+
+        Os ids das classificacoes de pedido carregam GUID e nao seguem o
+        padrao `<base>Text`/`<base>Id` (uns trocam '-' por '_', outros nao),
+        entao aqui os dois ids vem prontos do DOM. A opcao sai da lista
+        suspensa, escolhida pela mais parecida com o que o Forms respondeu —
+        o texto do Forms quase nunca e' identico ao do catalogo.
+        """
+        if not self.page or not valor or not id_text:
+            return False
+        try:
+            campo = self.page.query_selector(f'[id="{id_text}"]')
+            if not campo:
+                logger.info(f"   ⚠ Lookup {id_text} nao esta nesta tela")
+                return False
+            candidatos = [
+                c.strip() for c in self._SEPARADOR_OPCOES.split(str(busca or valor))
+                if c.strip()
+            ] or [str(valor)]
+            candidatos = [self._expandir_abreviacoes(c) for c in candidatos]
+            campo.scroll_into_view_if_needed()
+            campo.click()
+            opcoes = self._abrir_lista_lookup(campo, candidatos)
+            if not opcoes:
+                logger.warning(
+                    f"   ⚠ {id_text}: lista suspensa nao abriu para {valor!r}"
+                )
+                return False
+
+            alvo, texto_alvo, score = None, '', -1.0
+            for li, texto in opcoes:
+                s = max(self._calcular_similaridade(c, texto) for c in candidatos)
+                if s > score:
+                    alvo, texto_alvo, score = li, texto, s
+            if alvo is None:
+                return False
+            if score < self.SEMELHANCA_MINIMA_LOOKUP:
+                logger.warning(
+                    f"   ⚠ {id_text}: nada parecido com {valor!r} na lista "
+                    f"(melhor foi {texto_alvo!r}, {score:.2f}) — deixo vazio"
+                )
+                logger.warning(
+                    "   ⚠ opcoes vistas: "
+                    + ' | '.join(t for _, t in opcoes[:10])
+                )
+                # Nao basta desistir: se uma run anterior chutou um valor
+                # (10/08: 'Acordo homologado' com 0.31), ele ficaria gravado.
+                self._limpar_lookup(id_text, id_hidden)
+                return False
+
+            alvo.click()
+            time.sleep(0.4)
+            if id_hidden and not self._lookup_gravou(id_hidden):
+                # Bento/Kendo so comita por teclado: refaz a escolha andando
+                # ate o item na lista que continua aberta.
+                indice = [t for _, t in opcoes].index(texto_alvo)
                 try:
-                    self.page.wait_for_selector(
-                        '.k-list-container:visible, .k-animation-container:visible, '
-                        'ul.ui-autocomplete:visible',
-                        timeout=2500,
-                    )
+                    for _ in range(indice + 1):
+                        campo.press('ArrowDown')
+                    campo.press('Enter')
+                    time.sleep(0.4)
                 except Exception:
                     pass
-                clicou_opcao = False
-                try:
-                    clicou_opcao = self.page.evaluate(
-                        "(alvo) => {"
-                        "const norm = s => (s||'').toLowerCase()"
-                        ".normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').trim();"
-                        "const desejado = norm(alvo);"
-                        "const itens = Array.from(document.querySelectorAll("
-                        "'.k-list-container .k-item, "
-                        ".k-animation-container .k-item, "
-                        "ul.k-list li, ul.ui-autocomplete li')"
-                        ").filter(li => li.offsetParent !== null);"
-                        "for (const li of itens) {"
-                        "  const t = norm(li.innerText || li.textContent);"
-                        "  if (t === desejado || t.startsWith(desejado)) {"
-                        "    li.click(); return true;"
-                        "  }"
-                        "}"
-                        "return false;"
-                        "}",
-                        fase_desejada,
-                    )
-                except Exception as e:
-                    logger.debug(f"   (evaluate opção falhou: {e})")
-                if not clicou_opcao:
-                    fase_input.press('Enter')
-                fase_input.evaluate(
-                    "el => ['change','blur'].forEach("
-                    "e => el.dispatchEvent(new Event(e, {bubbles:true})))"
-                )
-                logger.info(f"   ✓ Fase alterada para: {fase_desejada}")
-                return True
+                if not self._lookup_gravou(id_hidden):
+                    logger.warning(f"   ⚠ {id_text}: selecao nao gravou o Id")
+                    return False
+            logger.info(
+                f"   ✓ {id_text}: {texto_alvo} (Forms: {valor}, "
+                f"semelhanca {score:.2f})"
+            )
+            return True
+        except NavegadorFechado:
+            raise
+        except Exception as e:
+            if _pagina_morta(e):
+                raise NavegadorFechado(
+                    f"navegador fechado ao escolher '{valor}' em {id_text}"
+                ) from e
+            logger.warning(f"   ⚠ Lookup {id_text} falhou: {e}")
+            return False
 
-            # Fallback: procura por label "Fase"
-            if self._garantir_preenchimento_campo_texto(
-                'Fase', fase_desejada
-            ):
-                logger.info(f"   ✓ Fase alterada via label: {fase_desejada}")
-                return True
+    def _limpar_lookup(self, id_text: str, id_hidden: str) -> None:
+        """Esvazia texto e hidden do lookup — campo vazio > valor chutado."""
+        try:
+            self.page.evaluate(
+                """
+                ([idText, idHidden]) => {
+                    for (const id of [idText, idHidden]) {
+                        const el = id && document.getElementById(id);
+                        if (el && el.value) {
+                            el.value = '';
+                            ['input', 'change', 'blur'].forEach(
+                                e => el.dispatchEvent(new Event(e, {bubbles: true}))
+                            );
+                        }
+                    }
+                }
+                """,
+                [id_text, id_hidden],
+            )
+            logger.info(f"   ↪ {id_text}: limpo (sem correspondencia no catalogo)")
+        except Exception as e:
+            logger.warning(f"   ⚠ nao consegui limpar {id_text}: {e}")
 
-            if self._fill_by_label('Fase', fase_desejada):
+    def _lookup_gravou(self, id_hidden: str) -> bool:
+        try:
+            hid = self.page.evaluate(
+                "(id) => (document.getElementById(id) || {}).value || ''", id_hidden
+            )
+        except Exception:
+            return False
+        return bool(str(hid).strip())
+
+    def _preencher_data_por_id(self, id_campo: str, valor) -> bool:
+        data = self._normalizar_data_legalone(valor)
+        if not data:
+            return False
+        try:
+            el = self.page.query_selector(f'#{id_campo}')
+            if not el:
+                logger.warning(f"   ⚠ Campo de data {id_campo} nao encontrado")
+                return False
+            el.scroll_into_view_if_needed()
+            el.click()
+            el.fill('')
+            el.type(data, delay=20)
+            self.page.keyboard.press('Tab')
+            el.evaluate(
+                "el => ['change','blur'].forEach("
+                "e => el.dispatchEvent(new Event(e, {bubbles:true})))"
+            )
+            logger.info(f"   ✓ {id_campo}: {data}")
+            return True
+        except Exception as e:
+            logger.warning(f"   ⚠ Falha ao preencher {id_campo}: {e}")
+            return False
+
+    @staticmethod
+    def _parse_moeda_br(valor) -> float | None:
+        """'R$ 80.000,00' / '80.000,00' / '80000' → 80000.0."""
+        if valor is None:
+            return None
+        s = str(valor).strip()
+        if not s or s.upper() in ('N/A', 'NA', '-', 'NONE'):
+            return None
+        s = re.sub(r'(?i)r\$\s*', '', s).strip()
+        s = s.replace(' ', '')
+        if re.search(r'[^\d.,\-]', s):
+            return None
+        if ',' in s and '.' in s:
+            s = s.replace('.', '').replace(',', '.')
+        elif ',' in s:
+            s = s.replace(',', '.')
+        try:
+            return float(s)
+        except ValueError:
+            return None
+
+    def _expandir_painel_do_campo(self, id_campo: str) -> None:
+        """Abre o collapse-panel pai do input (ValorCausa / ValorAcordo...)."""
+        if not self.page or not id_campo:
+            return
+        try:
+            self.page.evaluate(
+                """
+                (id) => {
+                    const el = document.getElementById(id);
+                    if (!el) return;
+                    let p = el.closest('.collapse-panel, .collapse, .panel-body, .edit-panel-responsive');
+                    while (p) {
+                        p.classList.add('in', 'show');
+                        p.style.display = 'block';
+                        p.style.height = 'auto';
+                        p.style.visibility = 'visible';
+                        p = p.parentElement && p.parentElement.closest(
+                            '.collapse-panel, .collapse'
+                        );
+                    }
+                    el.scrollIntoView({block: 'center', inline: 'nearest'});
+                }
+                """,
+                id_campo,
+            )
+        except Exception:
+            pass
+
+    def _preencher_moeda_por_id(self, id_campo: str, valor, *, so_se_vazio: bool = False) -> bool:
+        """Compat: um campo. Preferir `_preencher_moedas_em_lote` no fluxo real."""
+        numero = self._parse_moeda_br(valor)
+        if numero is None:
+            return False
+        ok, _falhas = self._preencher_moedas_em_lote([
+            {'id': id_campo, 'num': numero, 'so_vazio': so_se_vazio},
+        ])
+        return ok > 0
+
+    def _preencher_moedas_em_lote(self, itens: list[dict]) -> tuple[int, list[str]]:
+        """Grava varias moedas num unico page.evaluate (sem scroll/clique por campo).
+
+        Sem API paga do LegalOne: usa o DOM da sessao Playwright ja logada e o
+        autoNumeric do proprio Novajus — bem mais rapido que digitar campo a campo.
+        """
+        if not itens or not getattr(self, 'page', None):
+            return 0, [it.get('id', '?') for it in (itens or [])]
+        try:
+            resultados = self.page.evaluate(
+                """
+                (itens) => {
+                    const $ = window.jQuery || window.$;
+                    const fmt = (n) => Number(n).toLocaleString('pt-BR', {
+                        minimumFractionDigits: 2,
+                        maximumFractionDigits: 2,
+                    });
+                    const abrir = (el) => {
+                        let p = el.closest(
+                            '.collapse-panel, .collapse, .panel-body, .edit-panel-responsive'
+                        );
+                        while (p) {
+                            p.classList.add('in', 'show');
+                            p.style.display = 'block';
+                            p.style.height = 'auto';
+                            p.style.visibility = 'visible';
+                            p = p.parentElement && p.parentElement.closest(
+                                '.collapse-panel, .collapse'
+                            );
+                        }
+                    };
+                    const setMoeda = (el, num) => {
+                        if ($ && $.fn && (typeof $(el).autoNumeric === 'function'
+                                || typeof $(el).autoNumericSet === 'function')) {
+                            try {
+                                if (typeof $(el).autoNumericSet === 'function') {
+                                    $(el).autoNumericSet(num);
+                                } else {
+                                    $(el).autoNumeric('set', num);
+                                }
+                                return;
+                            } catch (e) { /* cai no valor cru */ }
+                        }
+                        el.value = fmt(num);
+                    };
+                    const out = [];
+                    for (const it of itens) {
+                        const el = document.getElementById(it.id);
+                        if (!el) {
+                            out.push({id: it.id, ok: false, motivo: 'ausente'});
+                            continue;
+                        }
+                        abrir(el);
+                        const atual = (el.value || '').replace(/\\s/g, '');
+                        if (it.so_vazio && atual && atual !== '0' && atual !== '0,00'
+                                && atual !== '0.00' && atual !== '0,0000') {
+                            out.push({
+                                id: it.id, ok: false, motivo: 'ja-preenchido', atual
+                            });
+                            continue;
+                        }
+                        setMoeda(el, it.num);
+                        ['input', 'change', 'blur', 'keyup'].forEach(
+                            e => el.dispatchEvent(new Event(e, {bubbles: true}))
+                        );
+                        out.push({id: it.id, ok: true, valor: el.value || ''});
+                    }
+                    return out;
+                }
+                """,
+                itens,
+            ) or []
+        except Exception as e:
+            logger.warning(f"   ⚠ Lote de moedas falhou: {e}")
+            return 0, [it.get('id', '?') for it in itens]
+
+        ok, falhas = 0, []
+        for r in resultados:
+            id_campo = r.get('id') or '?'
+            if r.get('ok'):
+                ok += 1
+                logger.info(f"   ✓ {id_campo}: {r.get('valor')}")
+            elif r.get('motivo') == 'ja-preenchido':
                 logger.info(
-                    f"   ✓ Fase alterada via fill_by_label: {fase_desejada}"
+                    f"   ℹ {id_campo} ja tem valor ({r.get('atual')}) — nao sobrescrevo"
+                )
+            else:
+                falhas.append(id_campo)
+                logger.warning(f"   ⚠ {id_campo} nao encontrado na tela")
+        return ok, falhas
+
+    # Moedas da ficha (HTML 11/08/2026) ← Forms (DECISOES / RECURSO / cadastro).
+    # so_se_vazio=True: nao pisa valor ja gravado (ex.: Valor da causa do tribunal).
+    _CAMPOS_MOEDA = (
+        ('ValorAcordoCondenacao_Value',
+         ('valor_acordo_condenacao', 'valor_total_deferido'), False),
+        ('ValorHonorarios_Value', ('valor_honorarios', 'valor_honorarios_favor_escritorio'), False),
+        ('CostsValue_Value', ('valor_custas',), False),
+        ('InvolvedAmmount_Value', ('valor_envolvido',), False),
+        ('ValorCausa_Value', ('valor_causa',), True),
+    )
+    # Alias antigo — testes/superficie ainda podem citar o nome da decisao.
+    _CAMPOS_MOEDA_DECISAO = _CAMPOS_MOEDA
+    _CUSTAS_TIPO = {
+        'favoravel': '0',
+        'desfavoravel': '1',
+        'sem posicao': '2',
+        'semposicao': '2',
+    }
+
+    def _obter_de_forms(self, dados_processo, *campos) -> str:
+        """Le campo canonico ou alias em outros_dados; ignora duplicata 'A | B'."""
+        dados = dados_processo or {}
+        outros = dados.get('outros_dados') or {}
+        for campo in campos:
+            valor = self._valor_limpo(dados.get(campo) or outros.get(campo))
+            if valor and not self._texto_forms_invalido(valor):
+                if ' | ' in str(valor):
+                    return ''
+                return valor
+        return ''
+
+    def _preencher_valores_monetarios(self, obter) -> tuple[int, list[str]]:
+        """Valor do acordo/condenacao, honorarios, custas — em lote no DOM."""
+        lote: list[dict] = []
+        for id_campo, campos, so_vazio in self._CAMPOS_MOEDA:
+            valor = obter(*campos) if len(campos) > 1 else obter(campos[0])
+            if not valor:
+                continue
+            numero = self._parse_moeda_br(valor)
+            if numero is None:
+                logger.warning(f"   ⚠ {id_campo}: valor invalido {valor!r}")
+                continue
+            lote.append({'id': id_campo, 'num': numero, 'so_vazio': so_vazio})
+
+        ok, falhas = self._preencher_moedas_em_lote(lote) if lote else (0, [])
+
+        custas = obter('custas')
+        if custas:
+            chave = self._normalizar_texto_busca(custas)
+            escolha = next(
+                (v for k, v in self._CUSTAS_TIPO.items() if k in chave or chave in k),
+                None,
+            )
+            if escolha is None:
+                logger.warning(f"   ⚠ CostsType: '{custas}' nao mapeado")
+                falhas.append('CostsType')
+            else:
+                gravou = False
+                try:
+                    if getattr(self, 'page', None):
+                        gravou = bool(self.page.evaluate(
+                            """
+                            (args) => {
+                                const [id, val] = args;
+                                const el = document.getElementById(id);
+                                if (!el) return false;
+                                el.value = val;
+                                el.dispatchEvent(new Event('change', {bubbles: true}));
+                                return el.value === val;
+                            }
+                            """,
+                            ['CostsType', escolha],
+                        ))
+                except Exception:
+                    gravou = False
+                if not gravou:
+                    gravou = self._selecionar_por_id('CostsType', escolha, 'CostsType')
+                if gravou:
+                    ok += 1
+                    logger.info(f"   ✓ CostsType: value={escolha}")
+                else:
+                    falhas.append('CostsType')
+
+        logger.info(
+            f"   [MOEDAS] {ok} campo(s) preenchido(s); falhas: {falhas or 'nenhuma'}"
+        )
+        return ok, falhas
+
+    # Compat: decisao e testes antigos chamavam pelo nome com _decisao.
+    _preencher_valores_monetarios_decisao = _preencher_valores_monetarios
+
+    def _aplicar_valores_monetarios(self, dados_processo) -> tuple[int, list[str]]:
+        """DataJud (lacunas) + moedas. Cadastro inicial, recurso e decisao."""
+        try:
+            self._enriquecer_dados_datajud(dados_processo)
+        except Exception as e:
+            logger.warning(f"   [DATAJUD] enriquecimento ignorado: {e}")
+
+        def obter(*campos):
+            return self._obter_de_forms(dados_processo, *campos)
+
+        resultado = self._preencher_valores_monetarios(obter)
+        try:
+            self._preencher_ficha_forms(obter)
+        except NavegadorFechado:
+            raise
+        except Exception as e:
+            logger.warning(f"   [FICHA] ignorada: {e}")
+        return resultado
+
+    # ------------------------------------------------------------------
+    # Ficha do processo: o resto do que o Forms respondeu.
+    # Ids conferidos na varredura de 11/08/2026 da tela de alteracao
+    # (docs/varredura/campos_20260811_111409.json).
+    # Tudo so-se-vazio: a tela chega preenchida pela captura do tribunal e o
+    # Forms e' resposta de memoria — sobrescrever apagaria o dado melhor.
+    # ------------------------------------------------------------------
+    _FICHA_LOOKUPS = (
+        ('TipoAcao', ('acao',)),
+        ('Natureza', ('natureza',)),
+        ('Orgao', ('orgao',)),
+        ('Procedimento', ('procedimento',)),
+        ('Instancia', ('instancia',)),
+        ('UF', ('uf',)),
+        ('Cidade', ('cidade',)),
+        # Label da tela e' 'Comarca/foro'; o Forms pergunta 'Cidade/Comarca'.
+        ('Foro', ('comarca', 'cidade_comarca')),
+        ('Vara', ('nome_vara_turma',)),
+        ('NegociacaoContratoHonorario', ('contrato_honorarios',)),
+        # Envolvidos principais. O texto visivel chega vazio no HTML (o JS
+        # preenche depois), entao quem diz se ja tem gente e' o hidden *Id.
+        ('Cliente_Envolvido', ('cliente',)),
+        ('Cliente_PosicaoEnvolvido', ('posicao',)),
+        ('Contrario_Envolvido', ('contrario',)),
+        # 'advogado' = Responsavel principal (mesma leitura do cadastro
+        # inicial, linha ~6201); 'advogado_responsavel' e' outro campo.
+        ('Responsavel_Envolvido', ('advogado',)),
+        # Taxonomia CNJ: a resposta do Forms tem que bater com a lista.
+        ('Classe', ('tipo_classe_recurso',)),
+    )
+    _FICHA_TEXTOS = (
+        ('NumeroAntigo', ('numero_antigo',)),
+        ('NumeroVaraTurma', ('numero_turma',)),
+        ('Observacoes', ('observacoes', 'comentario_adicional')),
+    )
+    _FICHA_DATAS = (
+        ('DataDistribuicao', ('data_distribuicao',)),
+    )
+    # Campos do painel 'Personalizados': o id real e'
+    # `<Nome>_ProcessoEntitySchema_p<schema>_o<processo>` — o `o<processo>`
+    # muda a cada ficha, entao resolvemos por prefixo em vez de hardcodar.
+    _PERSONALIZADOS_LOOKUP = (
+        ('SupermercadoLoja', ('supermercado_loja',)),
+        ('CentroDeCusto', ('centro_custo', 'centro_custo_cliente')),
+        ('CobrancaDeHonorariosSucumbenciais',
+         ('cobranca_honorarios_sucumbenciais',)),
+        ('CobrancaDeHonorariosContratuaisDeExito',
+         ('cobranca_honorarios_contratuais_exito',)),
+        ('DividasNaoTributariasTaxas', ('dividas_nao_tributarias',)),
+        ('DatacloudConfigurado', ('datacloud_configurado',)),
+        ('Responsabilidade', ('responsabilidade',)),
+    )
+    _PERSONALIZADOS_TEXTO = (
+        ('NCliente', ('numero_cliente',)),
+        ('Residencial', ('residencial',)),
+        ('Obra', ('obra',)),
+        ('PrescricaoBienal', ('prescricao_bienal',)),
+        ('PrescricaoQuinquenal', ('prescricao_quinquenal',)),
+        ('JustifiqueANaoCobrancaDeHonorariosSucumbenciais',
+         ('justificativa_nao_cobranca_honorarios_sucumbenciais',)),
+        ('JustifiqueANaoCobrancaDeHonorariosContratuaisDeExito',
+         ('justificativa_nao_cobranca_honorarios_contratuais',)),
+        ('ExecucaoDirecionada', ('redirecionamento',)),
+    )
+    _PERSONALIZADOS_DATA = (
+        ('DataDaCitacao', ('data_citacao',)),
+        ('DataDoPagamento', ('data_pagamento',)),
+    )
+    _PERSONALIZADOS_MOEDA = (
+        ('Provisao', ('valor_adicional_provisao',)),
+    )
+
+    _RE_ID_PERSONALIZADO = re.compile(r'_ProcessoEntitySchema_p\d+_o\d+$')
+
+    def _estado_campo(self, id_campo: str) -> str:
+        """'ausente' | 'vazio' | 'preenchido'.
+
+        'ausente' precisa ser distinguido de 'vazio': as mesmas tabelas rodam
+        no cadastro inicial (tela Angular), onde nenhum desses ids existe.
+        """
+        if not getattr(self, 'page', None) or not id_campo:
+            return 'ausente'
+        try:
+            return self.page.evaluate(
+                """
+                (id) => {
+                    const el = document.getElementById(id);
+                    if (!el) return 'ausente';
+                    return (el.value || '').trim() ? 'preenchido' : 'vazio';
+                }
+                """,
+                id_campo,
+            ) or 'ausente'
+        except Exception:
+            return 'ausente'
+
+    def _base_personalizado(self, prefixo: str) -> str:
+        """'SupermercadoLoja' -> 'SupermercadoLoja_ProcessoEntitySchema_p3650_o830'."""
+        if not getattr(self, 'page', None) or not prefixo:
+            return ''
+        try:
+            ids = self.page.evaluate(
+                """
+                (p) => Array.from(document.querySelectorAll(
+                    '[id^="' + p + '_ProcessoEntitySchema_"]'
+                )).map(el => el.id)
+                """,
+                prefixo,
+            ) or []
+        except Exception:
+            return ''
+        bases = {
+            b for b in (re.sub(r'_(Value|Id)$', '', i) for i in ids)
+            if self._RE_ID_PERSONALIZADO.search(b)
+        }
+        if len(bases) != 1:
+            if bases:
+                logger.warning(
+                    f"   ⚠ personalizado {prefixo}: {len(bases)} ids possiveis "
+                    f"{sorted(bases)[:3]} — deixo em branco"
+                )
+            return ''
+        return bases.pop()
+
+    def _preencher_texto_por_id(self, id_campo: str, valor: str,
+                                *, so_se_vazio: bool = True) -> bool:
+        if not getattr(self, 'page', None) or not id_campo or not valor:
+            return False
+        try:
+            estado = self.page.evaluate(
+                """
+                ([id, val, soVazio]) => {
+                    const el = document.getElementById(id);
+                    if (!el) return 'ausente';
+                    if (soVazio && (el.value || '').trim()) return 'ja-preenchido';
+                    el.value = val;
+                    ['input', 'change', 'blur'].forEach(
+                        e => el.dispatchEvent(new Event(e, {bubbles: true}))
+                    );
+                    return el.value === val ? 'ok' : 'nao-gravou';
+                }
+                """,
+                [id_campo, str(valor), bool(so_se_vazio)],
+            )
+        except Exception as e:
+            logger.warning(f"   ⚠ {id_campo}: {e}")
+            return False
+        if estado == 'ok':
+            logger.info(f"   ✓ {id_campo}: {valor}")
+            return True
+        logger.info(f"   ℹ {id_campo}: {estado}")
+        return False
+
+    def _preencher_ficha_forms(self, obter) -> tuple[int, list[str]]:
+        """Campos gerais da ficha que o Forms respondeu, so onde esta vazio.
+
+        Contrato separado do de moedas de proposito: uma falha aqui nao pode
+        derrubar o resultado da decisao, que e' julgado pelas moedas/pedidos.
+        """
+        ok, falhas = 0, []
+
+        def registrar(nome: str, gravou: bool) -> None:
+            nonlocal ok
+            if gravou:
+                ok += 1
+            else:
+                falhas.append(nome)
+
+        def alvo(id_campo: str, valor: str, *, visivel: str = '') -> bool:
+            """So mexe em campo que existe nesta tela e esta vazio.
+
+            `visivel`: id que sera clicado (lookup/data). Painel fechado deixa
+            o elemento inacessivel e o Playwright fica ~30s esperando ate
+            desistir — 'Personalizados' vem colapsado.
+            """
+            if not valor or not id_campo:
+                return False
+            estado = self._estado_campo(id_campo)
+            if estado != 'vazio':
+                logger.debug(f"   · {id_campo}: {estado}")
+                return False
+            if visivel:
+                self._expandir_painel_do_campo(visivel)
+            return True
+
+        for base, campos in self._FICHA_LOOKUPS:
+            valor = obter(*campos)
+            if alvo(f'{base}Id', valor, visivel=f'{base}Text'):
+                registrar(base, self._preencher_lookup_por_id(
+                    f'{base}Text', f'{base}Id', valor))
+
+        for id_campo, campos in self._FICHA_TEXTOS:
+            valor = obter(*campos)
+            if alvo(id_campo, valor):
+                registrar(id_campo, self._preencher_texto_por_id(id_campo, valor))
+
+        for id_campo, campos in self._FICHA_DATAS:
+            valor = obter(*campos)
+            if alvo(id_campo, valor, visivel=id_campo):
+                registrar(id_campo, self._preencher_data_por_id(id_campo, valor))
+
+        for prefixo, campos in self._PERSONALIZADOS_LOOKUP:
+            valor = obter(*campos)
+            base = self._base_personalizado(prefixo) if valor else ''
+            if base and alvo(f'{base}_Id', valor, visivel=f'{base}_Value'):
+                registrar(prefixo, self._preencher_lookup_por_id(
+                    f'{base}_Value', f'{base}_Id', valor))
+
+        for prefixo, campos in self._PERSONALIZADOS_TEXTO:
+            valor = obter(*campos)
+            base = self._base_personalizado(prefixo) if valor else ''
+            if base and alvo(base, valor):
+                registrar(prefixo, self._preencher_texto_por_id(base, valor))
+
+        for prefixo, campos in self._PERSONALIZADOS_DATA:
+            valor = obter(*campos)
+            base = self._base_personalizado(prefixo) if valor else ''
+            if base and alvo(base, valor, visivel=base):
+                registrar(prefixo, self._preencher_data_por_id(base, valor))
+
+        lote = []
+        for prefixo, campos in self._PERSONALIZADOS_MOEDA:
+            valor = obter(*campos)
+            base = self._base_personalizado(prefixo) if valor else ''
+            numero = self._parse_moeda_br(valor) if base else None
+            if numero is not None:
+                lote.append({'id': f'{base}_Value', 'num': numero, 'so_vazio': True})
+        if lote:
+            n_ok, n_falhas = self._preencher_moedas_em_lote(lote)
+            ok += n_ok
+            falhas.extend(n_falhas)
+
+        logger.info(
+            f"   [FICHA] {ok} campo(s) preenchido(s); falhas: {falhas or 'nenhuma'}"
+        )
+        return ok, falhas
+
+    def _enriquecer_dados_datajud(self, dados_processo: dict | None) -> None:
+        """Puxa do DataJud o que o Forms nao trouxe (valor da causa etc.).
+
+        So completa campos vazios — nunca sobrescreve resposta do Forms.
+        """
+        dados = dados_processo if isinstance(dados_processo, dict) else None
+        if not dados:
+            return
+        cnj = dados.get('cnj')
+        if not cnj:
+            return
+        outros = dados.get('outros_dados')
+        if not isinstance(outros, dict):
+            outros = {}
+            dados['outros_dados'] = outros
+
+        if self._valor_limpo(dados.get('valor_causa') or outros.get('valor_causa')):
+            return
+        try:
+            from datajud_client import DatajudClient
+            hits = DatajudClient().consultar(str(cnj))
+        except Exception as e:
+            logger.warning(f"   [DATAJUD] consulta falhou: {e}")
+            return
+        if not hits:
+            logger.info(f"   [DATAJUD] sem hits para {cnj}")
+            return
+        src = hits[0] if isinstance(hits[0], dict) else {}
+        valor_bruto = src.get('valorAcao') or src.get('valorCausa') or src.get('valor')
+        db = src.get('dadosBasicos')
+        if valor_bruto in (None, '') and isinstance(db, dict):
+            valor_bruto = db.get('valorCausa') or db.get('valorAcao')
+        numero = self._parse_moeda_br(valor_bruto)
+        if numero is None:
+            logger.info("   [DATAJUD] hit sem valor da causa utilizavel")
+            return
+        formatado = f"{numero:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+        dados['valor_causa'] = formatado
+        outros.setdefault('valor_causa', formatado)
+        logger.info(f"   [DATAJUD] valor_causa={formatado}")
+
+    def _preencher_classificacoes_pedidos(self, dados_processo: dict | None) -> tuple[int, int]:
+        """Situacao / Motivo da situacao / Valor deferido de cada pedido ja
+        cadastrado no processo.
+
+        Situacao e motivo sao respostas unicas do Forms e valem para todos os
+        pedidos; so o valor deferido varia por pedido.
+        """
+        dados = dados_processo or {}
+        outros = dados.get('outros_dados') or {}
+
+        def obter(*campos):
+            for campo in campos:
+                valor = self._valor_limpo(dados.get(campo) or outros.get(campo))
+                if valor and not self._texto_forms_invalido(valor):
+                    return valor
+            return ''
+
+        situacao = obter('situacao_pedido')
+        probabilidade = obter('probabilidade')      # Exito / Perda
+        grau = obter('grau_probabilidade')          # Possivel / Provavel / Remota
+        # A pergunta 'Motivo' do Forms ('Provas produzidas pelo RCTE') descreve
+        # o resultado, nao a situacao do pedido: ela vai no painel 'Previsao e
+        # resultado'. Aqui so entra o motivo da situacao, se o Forms mandar um.
+        motivo = obter('motivo_situacao', 'motivo')
+        valores = self._parse_valores_deferidos(
+            dados.get('valor_deferido_por_pedido')
+            or outros.get('valor_deferido_por_pedido')
+        )
+
+        linhas = self.page.evaluate(
+            """
+            () => {
+                const out = [];
+                const q = (n) => document.querySelector(`[name="${n}"]`);
+                document.querySelectorAll('input[name$=".SituacaoText"]').forEach(inp => {
+                    const prefixo = inp.name.slice(0, -'.SituacaoText'.length);
+                    const pedidoPrefixo = prefixo.split('.Classificacoes')[0];
+                    const pedido = q(pedidoPrefixo + '.NomePedidoText');
+                    out.push({
+                        pedido: pedido ? pedido.value : '',
+                        situacaoText: inp.id,
+                        situacaoId: (q(prefixo + '.SituacaoId') || {}).id || '',
+                        motivoText: (q(prefixo + '.MotivoSituacaoText') || {}).id || '',
+                        motivoId: (q(prefixo + '.MotivoSituacaoId') || {}).id || '',
+                        valorId: (q(prefixo + '.ValorDeferido.Value') || {}).id || '',
+                        // Probabilidade e' por pedido; conforme a versao da
+                        // tela ela pende da classificacao ou do pedido.
+                        probTipoId: (q(prefixo + '.ProbabilidadeTipoId')
+                            || q(pedidoPrefixo + '.ProbabilidadeTipoId') || {}).id || '',
+                        probGrauId: (q(prefixo + '.ProbabilidadeText')
+                            || q(pedidoPrefixo + '.ProbabilidadeText') || {}).id || '',
+                    });
+                });
+                return out;
+            }
+            """
+        )
+        if not linhas:
+            logger.warning("   ⚠ Nenhuma classificacao de pedido encontrada na tela")
+            return 0, 0
+
+        logger.info(f"   ℹ {len(linhas)} classificacao(oes) de pedido na tela")
+        ok = 0
+        motivos_sem_match: list[str] = []
+        for linha in linhas:
+            nome_pedido = linha.get('pedido') or '(sem nome)'
+            sucesso = True
+            if situacao:
+                sucesso = self._preencher_lookup_por_id(
+                    linha['situacaoText'], linha['situacaoId'], situacao
+                ) and sucesso
+            if motivo and linha.get('motivoText'):
+                # Motivo fora do catalogo nao invalida a linha: situacao,
+                # probabilidade e valor sao o que importa aqui. Antes uma
+                # recusa de motivo zerava os 8 pedidos e abortava o save.
+                if not self._preencher_lookup_por_id(
+                    linha['motivoText'], linha['motivoId'], motivo
+                ):
+                    motivos_sem_match.append(nome_pedido)
+            if self._ja_tem_valor(linha.get('probTipoId')):
+                logger.info(
+                    f"   ↪ '{nome_pedido}': probabilidade ja preenchida — nao mexo"
+                )
+            elif probabilidade and linha.get('probTipoId'):
+                # '1' = Perda, '0' = Exito (mesma convencao do cadastro inicial).
+                sucesso = self._selecionar_por_id(
+                    linha['probTipoId'],
+                    '1' if 'perda' in self._normalizar_texto_busca(probabilidade) else '0',
+                    f"Probabilidade de '{nome_pedido}'",
+                ) and sucesso
+            if grau and linha.get('probGrauId') and not self._ja_tem_valor(
+                    linha.get('probTipoId')):
+                sucesso = self._preencher_lookup_por_id(
+                    linha['probGrauId'], '', grau
+                ) and sucesso
+
+            valor = self._valor_deferido_do_pedido(nome_pedido, valores)
+            if valor and linha.get('valorId'):
+                try:
+                    el = self.page.query_selector(f'[id="{linha["valorId"]}"]')
+                    if el:
+                        el.scroll_into_view_if_needed()
+                        el.click()
+                        el.fill('')
+                        el.type(valor, delay=20)
+                        self.page.keyboard.press('Tab')
+                        logger.info(f"   ✓ Valor deferido de '{nome_pedido}': {valor}")
+                except Exception as e:
+                    logger.warning(f"   ⚠ Falha no valor deferido de '{nome_pedido}': {e}")
+                    sucesso = False
+            ok += 1 if sucesso else 0
+
+        logger.info(f"   ✅ Classificacoes preenchidas: {ok}/{len(linhas)}")
+        if motivos_sem_match:
+            logger.warning(
+                "   ⚠ Motivo da situacao ficou vazio (sem correspondencia no "
+                f"catalogo) em: {', '.join(motivos_sem_match)}"
+            )
+        return ok, len(linhas)
+
+    def _ja_tem_valor(self, id_campo: str | None) -> bool:
+        """True quando o campo ja esta preenchido na tela (nao sobrescrever)."""
+        if not id_campo:
+            return False
+        try:
+            return bool(
+                self.page.evaluate(
+                    "(id) => ((document.getElementById(id) || {}).value || '').trim()",
+                    id_campo,
+                )
+            )
+        except Exception:
+            return False
+
+    def _selecionar_por_id(self, id_campo: str, valor: str, descricao: str) -> bool:
+        """Escolhe uma opcao de <select> endereçado pelo id."""
+        try:
+            el = self.page.query_selector(f'[id="{id_campo}"]')
+            if not el:
+                logger.warning(f"   ⚠ {descricao}: select {id_campo} nao esta na tela")
+                return False
+            el.scroll_into_view_if_needed()
+            el.select_option(valor)
+            logger.info(f"   ✓ {descricao}: value={valor}")
+            return True
+        except Exception as e:
+            logger.warning(f"   ⚠ {descricao} falhou: {e}")
+            return False
+
+    def _valor_deferido_do_pedido(self, nome_pedido: str, valores: dict[str, str]) -> str:
+        if not valores:
+            return ''
+        alvo = _normalizar_pedido(nome_pedido)
+        if not alvo:
+            return ''
+        # 'Multa artigo 467' e 'Multa artigo 477' tem semelhanca 0.97: por
+        # similaridade a 467 herdava o valor da 477 (10/08/2026). Numero no
+        # nome do pedido e' identidade, nao detalhe — tem que bater.
+        digitos_alvo = re.findall(r'\d+', alvo)
+        melhor, score = '', 0.0
+        for nome, valor in valores.items():
+            if re.findall(r'\d+', nome) != digitos_alvo:
+                continue
+            s = self._calcular_similaridade(alvo, nome)
+            if s > score:
+                melhor, score = valor, s
+        return melhor if score >= 0.6 else ''
+
+    def _fluxo_recurso(self, dados_processo):
+        """Recurso: altera processo existente (fase/lookups/moedas), nao cadastra novo.
+
+        Cair no fluxo de cadastro inicial com CNJ ja existente abria 'Alterar'
+        so pelos pedidos e o Valor do acordo/condenacao ficava vazio.
+        """
+        dados = dados_processo or {}
+        cnj = self._valor_limpo(dados.get('cnj'))
+        if not cnj:
+            self.last_error_reason = "CNJ nao fornecido para recurso"
+            logger.error(f"[RECURSO] {self.last_error_reason}")
+            return False
+        try:
+            if not self._abrir_edicao_processo_por_busca(cnj):
+                self.last_error_reason = (
+                    f"Nao foi possivel abrir o processo {cnj} para registrar o recurso"
+                )
+                logger.error(f"[RECURSO] {self.last_error_reason}")
+                return False
+            time.sleep(1.5)
+
+            fase = self._obter_de_forms(dados, 'fase')
+            if fase:
+                self._alterar_fase_processo(fase)
+
+            try:
+                self._preencher_lookups_edicao(dados)
+            except Exception as e:
+                logger.warning(f"   [RECURSO] lookups: {e}")
+
+            # Painel de resultado quando o Forms de recurso trouxe resultado
+            def obter(*campos):
+                return self._obter_de_forms(dados, *campos)
+
+            if any(obter(c) for c in (
+                'resultado', 'tipo_resultado', 'motivo_resultado',
+                'data_resultado', 'data_sentenca',
+            )):
+                self._expandir_painel('Previsao e resultado')
+                self._preencher_painel_resultado(obter)
+
+            ok_moedas, falhas_moedas = self._aplicar_valores_monetarios(dados)
+            self._capturar_numero_pasta(dados)
+            if falhas_moedas:
+                logger.warning(
+                    f"   [RECURSO] moedas sem gravar: {', '.join(falhas_moedas)}"
+                )
+
+            logger.info("[RECURSO] Salvando alterações...")
+            salvo = self._clicar_salvar_decisao(dados)
+            if salvo:
+                self._capturar_numero_pasta(dados)
+                logger.info(
+                    f"\n✅ [RECURSO] concluído (moedas={ok_moedas}, "
+                    f"pasta={dados.get('numero_pasta') or 'N/A'})"
                 )
                 return True
-
-            logger.warning("   ⚠ Campo Fase não encontrado")
+            self.last_error_reason = self.last_error_reason or (
+                "Falha ao salvar no fluxo de recurso"
+            )
+            logger.error(f"[RECURSO] {self.last_error_reason}")
+            return False
+        except NavegadorFechado as e:
+            logger.error(f"⛔ Recurso abortado: {e}")
+            self.last_error_reason = str(e)
+            self._registrar_diagnostico_falha("Navegador fechado no recurso", str(e))
             return False
         except Exception as e:
-            logger.warning(f"   ⚠ Erro ao alterar fase: {e}")
+            logger.error(f"[RECURSO] Erro no fluxo: {e}")
+            self._registrar_diagnostico_falha("Fluxo Recurso", str(e))
             return False
+
+    def _fluxo_arquivamento_completo(self, dados_processo):
+        """Arquivamento completo: nao cadastra nada, altera o processo que ja
+        existe (Status/Fase = Arquivado, classificacao de cada pedido,
+        previsao e resultado, datas) e marca Encerrado.
+        """
+        logger.info("\n" + "=" * 60)
+        logger.info("⚫ FLUXO ARQUIVAMENTO COMPLETO")
+        logger.info("=" * 60)
+        dados = dados_processo or {}
+        outros = dados.get('outros_dados') or {}
+        cnj = dados.get('cnj', '')
+        if not cnj:
+            self.last_error_reason = "CNJ nao fornecido para arquivamento"
+            logger.error("[ARQUIVAMENTO] CNJ nao fornecido")
+            return False
+
+        def obter(*campos):
+            for campo in campos:
+                valor = self._valor_limpo(dados.get(campo) or outros.get(campo))
+                if valor and not self._texto_forms_invalido(valor):
+                    return valor
+            return ''
+
+        try:
+            # 1. Abrir o processo em modo Alterar
+            logger.info(f"[ARQUIVAMENTO] 1. Abrindo alteracao do processo {cnj}...")
+            if not self._abrir_edicao_processo_por_busca(cnj):
+                self.last_error_reason = "Nao foi possivel abrir o processo para alteracao"
+                logger.error("[ARQUIVAMENTO] " + self.last_error_reason)
+                return False
+            time.sleep(1.5)
+
+            # Salvar nao pode desmarcar o Encerrado aqui: no arquivamento ele e'
+            # o objetivo, nao lixo de run anterior.
+            self._encerramento_intencional = True
+
+            # 2. Status e Fase = Arquivado
+            logger.info("[ARQUIVAMENTO] 2. Status e Fase = Arquivado...")
+            if not self._preencher_lookup_antigo('Status', 'Arquivado'):
+                self._preencher_status_select('Arquivado')
+            if not self._preencher_lookup_antigo('Fase', 'Arquivado'):
+                self._alterar_fase_processo('Arquivado')
+
+            # 3. Classificacao de cada pedido
+            logger.info("[ARQUIVAMENTO] 3. Classificacao dos pedidos...")
+            self._preencher_classificacoes_pedidos(dados)
+
+            # 4. Previsao e resultado
+            logger.info("[ARQUIVAMENTO] 4. Previsao e resultado...")
+            for id_base, valor in (
+                ('TipoResultado', obter('tipo_resultado')),
+                ('Resultado', obter('resultado')),
+                ('MotivoResultado', obter('motivo_resultado')),
+            ):
+                if valor:
+                    self._preencher_lookup_antigo(id_base, valor)
+
+            # 5. Datas. A do arquivamento responde por baixa e encerramento —
+            # o Forms so pergunta uma.
+            logger.info("[ARQUIVAMENTO] 5. Datas...")
+            data_arquivamento = obter('data_arquivamento')
+            for id_campo, valor in (
+                ('DataResultado', obter('data_resultado')),
+                ('DataSentenca', obter('data_sentenca')),
+                ('DataBaixa', data_arquivamento),
+                ('DataEncerramento', data_arquivamento),
+            ):
+                if valor:
+                    self._preencher_data_por_id(id_campo, valor)
+
+            # 6. Marcar Encerrado
+            logger.info("[ARQUIVAMENTO] 6. Marcando Encerrado...")
+            marcou = self.page.evaluate(
+                """
+                () => {
+                    const cb = document.getElementById('IsEncerrado');
+                    if (!cb) return false;
+                    if (!cb.checked) {
+                        cb.click();
+                        if (!cb.checked) {
+                            cb.checked = true;
+                            cb.dispatchEvent(new Event('change', {bubbles: true}));
+                        }
+                    }
+                    return cb.checked;
+                }
+                """
+            )
+            if marcou:
+                logger.info("   ✓ Encerrado marcado")
+            else:
+                logger.warning("   ⚠ Checkbox 'Encerrado' nao encontrado/marcado")
+
+            # 7. Salvar
+            logger.info("[ARQUIVAMENTO] 7. Salvando...")
+            if self._clicar_salvar_decisao(dados):
+                logger.info("\n✅ [ARQUIVAMENTO] Arquivamento completo concluido!")
+                return True
+            logger.error("[ARQUIVAMENTO] Falha ao salvar")
+            if not self.last_error_reason:
+                self.last_error_reason = "Falha ao salvar no arquivamento completo"
+            return False
+        except Exception as e:
+            logger.error(f"[ARQUIVAMENTO] Erro no fluxo: {e}")
+            self._registrar_diagnostico_falha("Fluxo Arquivamento Completo", str(e))
+            self.last_error_reason = f"Erro no arquivamento completo: {e}"
+            return False
+        finally:
+            self._encerramento_intencional = False
 
     def _limpar_campos_indevidos_decisao(self) -> int:
         """No fluxo DECISÃO, limpa campos que NÃO deveriam estar preenchidos
@@ -7341,7 +8812,8 @@ class LegalOneCadastro:
                 'data da baixa', 'data do encerramento',
                 'motivo do encerramento', 'data baixa',
             )
-            if any(any(k in ln for k in keywords_encerramento) for ln in labels_norm):
+            if (any(any(k in ln for k in keywords_encerramento) for ln in labels_norm)
+                    and not getattr(self, '_encerramento_intencional', False)):
                 logger.warning(
                     "[CORREÇÃO] Erro relacionado a Encerramento → "
                     "nukeando IsEncerrado"
@@ -7661,7 +9133,7 @@ class LegalOneCadastro:
 
             # Fallback JS
             try:
-                self.page.evaluate(
+                clicou = self.page.evaluate(
                     """
                     () => {
                         const btn =
@@ -7680,6 +9152,10 @@ class LegalOneCadastro:
                     }
                     """
                 )
+                if not clicou:
+                    logger.error("   ❌ Nenhum botao Salvar encontrado (fallback JS)")
+                    self.last_error_reason = "Botao Salvar nao encontrado"
+                    return False
                 logger.info("   ✓ Salvo via JS")
                 time.sleep(3)
                 return True
@@ -7719,6 +9195,23 @@ class LegalOneCadastro:
         if tipo_tarefa == 'DECISAO':
             logger.info("\n[ROTEADOR] 🔵 Tipo DECISÃO detectado → Fluxo de Decisão")
             return self._fluxo_decisao(dados_processo)
+
+        if tipo_tarefa == 'RECURSO':
+            logger.info("\n[ROTEADOR] 🟠 Tipo RECURSO detectado → Fluxo de Recurso")
+            return self._fluxo_recurso(dados_processo)
+
+        # Arquivamento e' operacao sobre processo existente, nao cadastro. Cair
+        # no fluxo de cadastro abria o processo para alteracao e mexia onde nao
+        # devia — melhor falhar alto do que cadastrar errado em silencio.
+        if tipo_tarefa == 'ARQUIVAMENTO':
+            subtipo = dados_processo.get('tipo_cadastro_canonico') or 'ARQUIVAMENTO'
+            if subtipo == 'ARQUIVAMENTO COMPLETO':
+                logger.info("\n[ROTEADOR] ⚫ ARQUIVAMENTO COMPLETO → Fluxo de Arquivamento")
+                return self._fluxo_arquivamento_completo(dados_processo)
+            # ponytail: arquivamento simples ainda sem passos definidos no LegalOne.
+            logger.error(f"\n[ROTEADOR] ⚫ {subtipo}: fluxo ainda nao implementado — nao vou cadastrar.")
+            self.last_error_reason = f"{subtipo} exige fluxo proprio (nao implementado) — tratar manualmente"
+            return False
 
         try:
             self._captura_em_rascunhos = False
@@ -7777,6 +9270,10 @@ class LegalOneCadastro:
                         logger.info("Rascunho reaberto - completando cadastro...")
                         self.preencher_campos_obrigatorios(dados_processo)
                         self.preencher_detalhes_faltantes(dados_processo)
+                        try:
+                            self._aplicar_valores_monetarios(dados_processo)
+                        except Exception as e:
+                            logger.warning(f"   [MOEDAS] falha no rascunho: {e}")
                         if self.clicar_salvar():
                             if self.realizar_acoes_pos_cadastro(dados_processo):
                                 return self._confirmar_no_acervo(dados_processo)
@@ -7840,6 +9337,12 @@ class LegalOneCadastro:
             # 6. Preenche detalhes adicionais
             self.preencher_detalhes_faltantes(dados_processo)
 
+            # 6a. Moedas (valor da causa / acordo / honorarios / custas) + DataJud
+            try:
+                self._aplicar_valores_monetarios(dados_processo)
+            except Exception as e:
+                logger.warning(f"   [MOEDAS] falha no cadastro: {e}")
+
             # 6b. Tenta novamente solicitar monitoramento (bloco pode ter aparecido após preencher campos)
             try:
                 self._configurar_monitoramento_se_disponivel()
@@ -7857,13 +9360,7 @@ class LegalOneCadastro:
                 logger.warning(f"[QA] Validador indisponível: {_qa_err}")
 
             # Numero da pasta (ex.: "Proc - 0007344") ja aparece no formulario - captura p/ email
-            try:
-                pasta = self._valor_limpo(self._ler_valor_campo_formulario('Pasta'))
-                if pasta:
-                    dados_processo['numero_pasta'] = pasta
-                    logger.info(f"   [PASTA] {pasta}")
-            except Exception:
-                pass
+            self._capturar_numero_pasta(dados_processo)
 
             # 6c. LegalOne ainda acusa obrigatorios vazios? resolve via cua-driver
             # O detector nao enxerga os combobox da UI nova e acusa vazio campo
@@ -9571,45 +11068,14 @@ class LegalOneCadastro:
         return f"TRT {int(m.group(1))}" if m else ''
 
     def _preencher_lookup_antigo(self, id_base: str, valor: str) -> bool:
-        """Campos lookup da tela de alteracao (#OrgaoText/#OrgaoId, Procedimento, Fase).
+        """Campo lookup da tela de alteracao endereçado pelo id (#<base>Text).
 
-        Aqui o dropdown do jQuery COMMITA no clique — o problema do bento-combobox
-        nao existe. O que vale como aceite e' o hidden #<id>Id ter ganhado valor;
-        o texto visivel sozinho nao prova nada.
+        O aceite e' o hidden #<base>Id ganhar valor; texto visivel nao prova
+        nada. A escolha sai da lista suspensa — digitar so filtra.
         """
-        if not self.page or not valor:
-            return False
-        try:
-            campo = self.page.query_selector(f'#{id_base}Text')
-            if not campo:
-                logger.info(f"   ⚠ Lookup {id_base} nao esta nesta tela")
-                return False
-            campo.click()
-            campo.fill('')
-            campo.type(str(valor)[:40], delay=40)
-            try:
-                self.page.wait_for_selector('.ac_results li', state='visible', timeout=8000)
-            except Exception:
-                logger.warning(f"   ⚠ {id_base}: dropdown nao abriu para {valor!r}")
-                return False
-            linhas = self.page.query_selector_all('.ac_results li')
-            textos = [(l, (l.inner_text() or '').strip()) for l in linhas]
-            alvo = next((l for l, t in textos if t.lower() == str(valor).lower()), None) \
-                or next((l for l, t in textos if str(valor).lower() in t.lower()), None) \
-                or (textos[0][0] if textos else None)
-            if not alvo:
-                return False
-            alvo.click()
-            time.sleep(0.5)
-            hid = self.page.eval_on_selector(f'#{id_base}Id', 'el => el.value') or ''
-            if not str(hid).strip():
-                logger.warning(f"   ⚠ {id_base}: clique nao gravou o Id — campo segue vazio")
-                return False
-            logger.info(f"   ✓ {id_base}: {valor} (Id={hid})")
-            return True
-        except Exception as e:
-            logger.warning(f"   ⚠ Lookup {id_base} falhou: {e}")
-            return False
+        return self._preencher_lookup_por_id(
+            f'{id_base}Text', f'{id_base}Id', valor
+        )
 
     def _preencher_lookups_edicao(self, dados: dict | None) -> None:
         """Orgao, Procedimento e Fase na tela de alteracao."""
@@ -9743,6 +11209,11 @@ class LegalOneCadastro:
                     self.preencher_campos_obrigatorios(dados_processo)
                 # Orgao/Procedimento/Fase so existem nesta tela (lookup jQuery)
                 self._preencher_lookups_edicao(dados_processo)
+                # Moedas da ficha (recurso / processo ja existente em alteracao)
+                try:
+                    self._aplicar_valores_monetarios(dados_processo)
+                except Exception as e:
+                    logger.warning(f"   [MOEDAS] falha na alteracao: {e}")
             except Exception as e:
                 logger.warning(f"   [ALTERAR] Falha ao completar obrigatórios: {e}")
 
