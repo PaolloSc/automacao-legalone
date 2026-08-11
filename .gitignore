@@ -45,3 +45,11 @@ Thumbs.db
 
 # Transcricoes de sessao do agente (contexto bruto, nao e fonte)
 docs/jurimetria/*.txt
+# ===== Estado de runtime / artefatos de execucao =====
+graph_processed_emails.json
+guardian_log.jsonl
+guardian_screenshots/
+qa_screenshots/
+debug_visaofill_*.png
+debug_forms_dump.html
+ultimo_processo.txt
