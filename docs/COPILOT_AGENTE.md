@@ -266,6 +266,13 @@ Dois limites que precisam estar claros para quem lê o número:
 2. Só vale para pedido **contencioso**. Inventário e divórcio consensual quase
    nunca dão improcedente e apareceriam como "risco Alto" sem significar nada.
 
+> **Alterado em 13/08/2026 (publicado).** Duas regras mudaram no prompt vivo:
+> `risco` agora é sempre "NAO LOCALIZADO" — quem resolve é o bot, pelo código
+> TPU do assunto (ver seção de Jurimetria); e `cnj` virou obrigatório: sem o
+> número (petição inicial ainda não protocolada), o agente PERGUNTA ao
+> advogado e não chama o fluxo. O bot não cadastra sem CNJ, então enviar sem
+> ele só gera e-mail de erro.
+
 ## Formato de Saída
 Liste campos extraídos com valores. Se não encontrou, "NAO LOCALIZADO"
 (exceto nos campos Sim/Nao acima).
