@@ -15,7 +15,13 @@ if not errorlevel 1 (
   echo [AVISO] Chrome aberto. Feche-o se a automacao falhar ao abrir o perfil.
 )
 
+REM Supervisor: se a automacao cair (ou o watchdog matar por travamento),
+REM sobe de novo em 30s. Nada de 'pause' aqui: sem console (tarefa agendada)
+REM ele travaria pra sempre e a tarefa ficaria "Running" com o robo morto.
+:loop
 echo [%date% %time%] iniciando automacao...
 (echo 1& echo.) | "%~dp0..\venv\Scripts\python.exe" automacao_legalone_completa.py
-echo [%date% %time%] automacao encerrou com codigo %errorlevel%
-pause
+echo [%date% %time%] automacao encerrou com codigo %errorlevel% - reiniciando em 30s
+REM ping em vez de timeout: 'timeout' morre quando stdin nao e console.
+ping -n 31 127.0.0.1 >nul
+goto loop
