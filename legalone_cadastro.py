@@ -8228,6 +8228,12 @@ class LegalOneCadastro:
 
         pendentes = [c for c in self._DATAJUD_CAMPOS
                      if not self._valor_limpo(dados.get(c) or outros.get(c))]
+        # `risco` e' a excecao ao so-se-vazio: o agente mostra o dele no chat
+        # (casado por TEXTO com a tabela), e casar por texto e' justamente o
+        # que erra a linha — 'Horas in Itinere' aparece com tres grafias. Aqui
+        # o codigo TPU decide, e a divergencia fica registrada no log.
+        if 'risco' not in pendentes:
+            pendentes.append('risco')
         if not pendentes:
             return
         try:
@@ -8255,8 +8261,14 @@ class LegalOneCadastro:
             if not valor:
                 logger.info(f"   [DATAJUD] hit sem {campo}")
                 continue
+            anterior = self._valor_limpo(dados.get(campo) or outros.get(campo))
+            if campo == 'risco' and anterior and anterior != valor:
+                logger.warning(
+                    f"   [DATAJUD] risco do agente {anterior!r} -> {valor!r} "
+                    f"(codigo TPU do assunto)"
+                )
             dados[campo] = valor
-            outros.setdefault(campo, valor)
+            outros[campo] = valor
             logger.info(f"   [DATAJUD] {campo}={valor}")
             if campo == 'risco' and detalhe_risco:
                 outros.setdefault('justificativa_risco', detalhe_risco)

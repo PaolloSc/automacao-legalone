@@ -114,15 +114,34 @@ def test_bot_preenche_risco_pelo_codigo(tmp_path):
         restaurar()
 
 
-def test_bot_nao_sobrescreve_risco_do_agente(tmp_path):
+def test_codigo_tpu_corrige_o_risco_do_agente(tmp_path):
+    """O agente casa o assunto por TEXTO e erra a linha; o codigo casa exato.
+
+    Por isso `risco` e' a excecao ao so-se-vazio: o valor que o agente mostrou
+    no chat entra, mas quem grava no LegalOne e' a tabela pelo codigo.
+    """
     _plantar(tmp_path, "jurimetria_trt9.md", TABELA_NOVA)
     bot, restaurar = _bot([HIT])
     try:
         dados = {"cnj": "0000123-45.2024.5.09.0001", "risco": "Alto",
                  "outros_dados": {}}
         bot._enriquecer_dados_datajud(dados)
+        assert dados["risco"] == "Médio"          # 2546, o assunto principal
+        assert dados["outros_dados"]["risco"] == "Médio"
+        assert "justificativa_risco" in dados["outros_dados"]
+    finally:
+        restaurar()
+
+
+def test_sem_tabela_o_risco_do_agente_permanece(tmp_path):
+    """Tribunal sem tabela: nada a conferir, o que o agente disse fica."""
+    _plantar(tmp_path, "jurimetria_trt9.md", TABELA_NOVA)
+    bot, restaurar = _bot([dict(HIT, tribunal="TRT21")])
+    try:
+        dados = {"cnj": "0000123-45.2024.5.21.0001", "risco": "Alto",
+                 "outros_dados": {}}
+        bot._enriquecer_dados_datajud(dados)
         assert dados["risco"] == "Alto"
-        assert "justificativa_risco" not in dados["outros_dados"]
     finally:
         restaurar()
 
