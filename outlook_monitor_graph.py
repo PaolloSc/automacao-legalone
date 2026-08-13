@@ -144,6 +144,18 @@ class OutlookMonitorGraph:
         logger.warning("[AVISO] Nenhum link do Forms encontrado no email")
         return None
 
+    @staticmethod
+    def extrair_respondente(corpo_email: str) -> str | None:
+        """'Voce recebeu uma nova resposta de Marcela Leite Kato.' -> o nome.
+
+        E' o unico lugar onde o Forms diz QUEM respondeu: a resposta em si so'
+        traz as perguntas do formulario, sem identificar quem preencheu.
+        """
+        import html as html_mod
+        texto = html_mod.unescape(re.sub(r'<[^>]+>', ' ', corpo_email or ''))
+        m = re.search(r'nova resposta de\s+([^.<\n]{3,80})', texto, re.IGNORECASE)
+        return re.sub(r'\s+', ' ', m.group(1)).strip(' .') if m else None
+
     def _extrair_json_do_corpo(self, corpo_html: str) -> dict | None:
         """Tenta extrair JSON estruturado do corpo do email (emails do Copilot)."""
         import html as html_mod
@@ -267,6 +279,8 @@ class OutlookMonitorGraph:
                     "body": corpo,
                     "entry_id": msg_id,
                     "forms_link": link,
+                    # Quem preencheu — vira destinatario do e-mail de sucesso.
+                    "respondente": self.extrair_respondente(corpo),
                 }
 
                 if dados["forms_link"]:

@@ -484,6 +484,29 @@ class AutomacaoLegalOne:
                 destinos.append(email)
         return destinos or [self.DESTINATARIO_ERRO_PADRAO]
 
+    @staticmethod
+    def _email_do_respondente(email_data: dict | None) -> str | None:
+        """E-mail de quem preencheu o Forms, para a confirmacao de sucesso.
+
+        So' entra no e-mail de SUCESSO: quando da' erro, quem precisa agir e'
+        quem cuida do bot, nao quem respondeu o formulario. O Forms so' diz o
+        nome ("nova resposta de Fulano"), entao o e-mail sai do equipe.py —
+        que devolve None se o nome for ambiguo, e ai' ninguem extra e' avisado.
+        """
+        nome = (email_data or {}).get('respondente')
+        if not nome:
+            return None
+        try:
+            from equipe import resolver
+            achado = resolver(nome)
+        except Exception as e:
+            logger.warning(f"[EMAIL-OK] respondente '{nome}' nao resolvido: {e}")
+            return None
+        if not achado:
+            logger.info(f"[EMAIL-OK] respondente '{nome}' ambiguo/desconhecido — sem copia")
+            return None
+        return achado[1]
+
     def _montar_notificacao_erro(self, email_data: dict | None, dados_processo: dict | None) -> dict:
         email_data = email_data or {}
         dados_processo = dados_processo or {}
@@ -1198,12 +1221,18 @@ class AutomacaoLegalOne:
             f"Monitoramento: {status_mon or 'N/A'}\n"
         )
 
+        destinatarios = list(self._destinatarios_erro())
+        respondente = self._email_do_respondente(email_data)
+        if respondente and respondente.lower() not in {d.lower() for d in destinatarios}:
+            destinatarios.append(respondente)
+            logger.info(f"[EMAIL-OK] confirmando tambem para quem respondeu: {respondente}")
+
         notificacao = {
             'cnj': cnj,
             'subject': rotulos['assunto'],
             'text': texto,
             'html': html,
-            'to': self._destinatarios_erro(),
+            'to': destinatarios,
         }
 
         tentativas = [
