@@ -275,11 +275,13 @@ Dois limites que precisam estar claros para quem lê o número:
 >   grava no LegalOne é o bot, pelo **código TPU** do assunto: o agente casa o
 >   assunto por texto e erra a linha, então a tabela por código corrige.
 >   Divergência sai no log (`risco do agente 'Alto' -> 'Medio'`).
-> - `natureza` aceita só **Cível** ou **Trabalhista**.
 > - Trabalhista: `probabilidade` = Perda e `grau_probabilidade` = Possível,
 >   sempre.
+> - `natureza` continua livre — vale qualquer natureza jurídica (Cível,
+>   Trabalhista, Tributário, Previdenciário, Criminal, Família, Consumidor…).
+>   Cheguei a restringir a Cível/Trabalhista em 19:43 e foi revertido em 19:49.
 >
-> O prompt está em 7.997/8.000 caracteres — qualquer regra nova exige aparar
+> O prompt está em 7.974/8.000 caracteres — qualquer regra nova exige aparar
 > outra antes.
 
 ## Formato de Saída
