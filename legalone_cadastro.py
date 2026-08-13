@@ -7927,6 +7927,12 @@ class LegalOneCadastro:
             raise
         except Exception as e:
             logger.warning(f"   [FICHA] ignorada: {e}")
+        try:
+            self._preencher_assunto_cnj(dados_processo)
+        except NavegadorFechado:
+            raise
+        except Exception as e:
+            logger.warning(f"   [FICHA] Assunto (CNJ) ignorado: {e}")
         return resultado
 
     # ------------------------------------------------------------------
@@ -8173,7 +8179,7 @@ class LegalOneCadastro:
     # peticao quase nunca traz (o Copilot devolve 'NAO LOCALIZADO' neles).
     _DATAJUD_CAMPOS = ('valor_causa', 'data_distribuicao',
                        'nome_vara_turma', 'tipo_classe_recurso', 'risco',
-                       'justica')
+                       'justica', 'assunto_cnj')
 
     # Segmento do CNJ (digito J) -> 'Justica (CNJ)' na ficha. Res. CNJ 65/2008.
     # Nao precisa de consulta: o proprio numero do processo diz.
@@ -8279,6 +8285,11 @@ class LegalOneCadastro:
                 src.get('dataAjuizamento') or db.get('dataAjuizamento')),
             'nome_vara_turma': self._dj_dict(src.get('orgaoJulgador')).get('nome'),
             'tipo_classe_recurso': self._dj_dict(src.get('classe')).get('nome'),
+            # Assunto principal (o primeiro que o DataJud devolve). O campo do
+            # LegalOne e' a mesma taxonomia TPU, entao o nome casa direto.
+            'assunto_cnj': self._dj_dict(
+                ([a for a in (src.get('assuntos') or []) if isinstance(a, dict)]
+                 or [{}])[0]).get('nome'),
         }
         for campo in pendentes:
             valor = capa.get(campo)
@@ -8297,6 +8308,49 @@ class LegalOneCadastro:
             if campo == 'risco' and detalhe_risco:
                 outros.setdefault('justificativa_risco', detalhe_risco)
                 logger.info(f"   [DATAJUD] risco por assunto: {detalhe_risco}")
+
+    def _preencher_assunto_cnj(self, dados_processo: dict | None) -> bool:
+        """'Assunto (CNJ)' do painel Dados complementares.
+
+        Lista repetivel: os ids carregam GUID por linha
+        (`Assuntos_<guid>__AssuntoText` / `__AssuntoId`), como as
+        classificacoes de pedido — por isso os ids saem do DOM, nao de uma
+        constante. Preenche a primeira linha, so' se ela estiver vazia; a
+        linha ja' vem no HTML, entao nao ha' 'Adicionar assunto' a clicar.
+
+        O texto vem do DataJud (assunto principal). Se a lista do LegalOne
+        tiver homonimos em ramos diferentes da arvore TPU, o log do lookup
+        mostra as opcoes vistas — e' com esse log que se decide se vale
+        buscar a ancestralidade no SGT do CNJ para desempatar.
+        """
+        dados = dados_processo if isinstance(dados_processo, dict) else None
+        if not self.page or not dados:
+            return False
+        outros = dados.get('outros_dados') or {}
+        assunto = self._valor_limpo(dados.get('assunto_cnj')
+                                    or outros.get('assunto_cnj'))
+        if not assunto:
+            return False
+        linha = self.page.evaluate(
+            """
+            () => {
+                const inp = document.querySelector('input[name$=".AssuntoText"]');
+                if (!inp) return null;
+                const base = inp.name.slice(0, -'.AssuntoText'.length);
+                const oculto = document.querySelector(`[name="${base}.AssuntoId"]`);
+                return {text: inp.id, hidden: oculto ? oculto.id : '', valor: inp.value};
+            }
+            """
+        )
+        if not linha or not linha.get('text'):
+            logger.info("   ℹ Campo 'Assunto (CNJ)' nao esta nesta tela")
+            return False
+        if self._valor_limpo(linha.get('valor')):
+            logger.info(f"   ↪ Assunto (CNJ) ja preenchido: {linha['valor']!r}")
+            return False
+        return self._preencher_lookup_por_id(
+            linha['text'], linha.get('hidden') or '', assunto
+        )
 
     def _preencher_classificacoes_pedidos(self, dados_processo: dict | None) -> tuple[int, int]:
         """Situacao / Motivo da situacao / Valor deferido de cada pedido ja
