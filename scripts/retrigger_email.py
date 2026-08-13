@@ -18,6 +18,13 @@ import os
 import subprocess
 import sys
 
+# Assunto de e-mail traz zero-width space e emoji; no console cp1252 do Windows
+# isso derrubava a listagem no meio (UnicodeEncodeError).
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+except Exception:
+    pass
+
 RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, RAIZ)
 ESTADO = os.path.join(RAIZ, os.getenv('GRAPH_STATE_FILE', 'graph_processed_emails.json'))
@@ -25,7 +32,11 @@ ESTADO = os.path.join(RAIZ, os.getenv('GRAPH_STATE_FILE', 'graph_processed_email
 
 def _monitor():
     from dotenv import load_dotenv
+    # Na VM o .env fica na raiz do pacote; no PC do escritorio ele esta' um
+    # nivel acima (Codigo/.env), que e' onde o load_dotenv() sem argumento
+    # acha subindo a arvore — igual ao que automacao_legalone_completa faz.
     load_dotenv(os.path.join(RAIZ, '.env'))
+    load_dotenv()
     from outlook_monitor_graph import OutlookMonitorGraph
     return OutlookMonitorGraph()
 
