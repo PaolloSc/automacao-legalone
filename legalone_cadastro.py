@@ -7942,6 +7942,9 @@ class LegalOneCadastro:
         ('Orgao', ('orgao',)),
         ('Procedimento', ('procedimento',)),
         ('Instancia', ('instancia',)),
+        # 'Justica (CNJ)' (#JusticaId na varredura de 13/08/2026): chega vazio
+        # do tribunal e sai do segmento do proprio CNJ.
+        ('Justica', ('justica',)),
         ('UF', ('uf',)),
         ('Cidade', ('cidade',)),
         # Label da tela e' 'Comarca/foro'; o Forms pergunta 'Cidade/Comarca'.
@@ -8169,7 +8172,27 @@ class LegalOneCadastro:
     # Campos que o DataJud sabe responder — sao os da capa de rosto, que a
     # peticao quase nunca traz (o Copilot devolve 'NAO LOCALIZADO' neles).
     _DATAJUD_CAMPOS = ('valor_causa', 'data_distribuicao',
-                       'nome_vara_turma', 'tipo_classe_recurso', 'risco')
+                       'nome_vara_turma', 'tipo_classe_recurso', 'risco',
+                       'justica')
+
+    # Segmento do CNJ (digito J) -> 'Justica (CNJ)' na ficha. Res. CNJ 65/2008.
+    # Nao precisa de consulta: o proprio numero do processo diz.
+    _JUSTICA_POR_SEGMENTO = {
+        '1': 'Supremo Tribunal Federal',
+        '2': 'Conselho Nacional de Justiça',
+        '3': 'Superior Tribunal de Justiça',
+        '4': 'Justiça Federal',
+        '5': 'Justiça do Trabalho',
+        '6': 'Justiça Eleitoral',
+        '7': 'Justiça Militar da União',
+        '8': 'Justiça Estadual',
+        '9': 'Justiça Militar Estadual',
+    }
+
+    @classmethod
+    def _justica_do_cnj(cls, cnj) -> str | None:
+        d = re.sub(r'\D', '', str(cnj or ''))
+        return cls._JUSTICA_POR_SEGMENTO.get(d[13]) if len(d) == 20 else None
 
     @staticmethod
     def _dj_dict(valor) -> dict:
@@ -8250,6 +8273,7 @@ class LegalOneCadastro:
         risco, detalhe_risco = self._dj_risco(src, cnj)
         capa = {
             'risco': risco,
+            'justica': self._justica_do_cnj(cnj),
             'valor_causa': self._dj_valor_causa(src, db),
             'data_distribuicao': self._dj_data_br(
                 src.get('dataAjuizamento') or db.get('dataAjuizamento')),
