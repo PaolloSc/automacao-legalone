@@ -516,6 +516,22 @@ class FormsExtractor:
     # Navegador persistente: mantém Forms aberto entre extrações
     # -------------------------------------------------------------------
 
+    @staticmethod
+    def _url_respostas_individuais(forms_url: str) -> str | None:
+        """Link do e-mail (pagina de Design) -> view de resposta individual.
+
+        `topview=SurveyResults` abre direto onde a extracao acontece. Sem ele a
+        pagina cai no editor do formulario e so' se chega nas respostas
+        clicando no botao/menu '...' — que sumiu na UI nova e derrubou a
+        extracao de 13/08/2026.
+        """
+        m = re.search(r'FormId=([^&]+)', forms_url or '')
+        if not m:
+            return None
+        return (f"https://forms.office.com/pages/designpagev2.aspx?"
+                f"analysis=true&origin=EmailNotification&subpage=design"
+                f"&id={m.group(1)}&topview=SurveyResults")
+
     async def _garantir_forms_aberto(self, forms_url: str, timeout: int = 60000) -> bool:
         """Garante que o navegador está aberto com o Forms em 'Verificar resultados individuais'.
 
@@ -590,13 +606,9 @@ class FormsExtractor:
         # --- Ajusta URL se vier da página de Design/Analysis ---
         if "DesignPage" in forms_url or "Analysis=true" in forms_url:
             logger.info("[AJUSTE] Link de Design detectado, convertendo para Respostas...")
-            form_id_match = re.search(r'FormId=([^&]+)', forms_url)
-            if form_id_match:
-                form_id = form_id_match.group(1)
-                forms_url = (
-                    f"https://forms.office.com/pages/designpagev2.aspx?"
-                    f"analysis=true&origin=EmailNotification&subpage=design&id={form_id}"
-                )
+            nova = self._url_respostas_individuais(forms_url)
+            if nova:
+                forms_url = nova
                 logger.info(f"[AJUSTE] Nova URL: {forms_url}")
 
         self._forms_url_base = forms_url
@@ -673,6 +685,12 @@ class FormsExtractor:
                 return False
 
         await asyncio.sleep(3)
+
+        # A URL ja' pede `topview=SurveyResults`, entao o normal e' cair direto
+        # na resposta individual: se o campo Entrevistado esta' ai', nao ha' aba
+        # nem menu '...' para caçar (era onde a extracao travava 15 min).
+        if await self._esta_em_resultados_individuais():
+            return await self._confirmar_resultados_individuais()
 
         # --- Detectar página de Design → clicar aba Respostas ---
         try:
@@ -763,9 +781,40 @@ class FormsExtractor:
         except Exception as e:
             logger.warning(f"[AVISO] Erro ao navegar para resultados individuais: {e}")
 
-        self._forms_aberto = True
-        logger.info("[FORMS] ✅ Forms aberto em 'Verificar resultados individuais'")
-        return True
+        return await self._confirmar_resultados_individuais()
+
+    async def _esta_em_resultados_individuais(self) -> bool:
+        """Sonda muda: a view de resposta individual tem o campo Entrevistado."""
+        for sel in ('input[aria-label="Entrevistado"]',
+                    'input[aria-label="Respondent"]'):
+            try:
+                if await self._page.locator(sel).count() > 0:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    async def _confirmar_resultados_individuais(self) -> bool:
+        """So' e' sucesso se a view de resposta individual estiver na tela.
+
+        Antes isto era `return True` incondicional: em 13/08/2026 o botao nao
+        foi encontrado, o log disse "Forms aberto" do mesmo jeito e a extracao
+        seguiu raspando a tela de EDICAO — devolvendo cnj='. . .',
+        cliente='BUFFET', fase='236'. Falhar aqui e' o que faz o motivo real
+        chegar no e-mail de erro em vez de "CNJ ausente".
+        """
+        if await self._esta_em_resultados_individuais():
+            self._forms_aberto = True
+            logger.info(
+                "[FORMS] ✅ Forms aberto em 'Verificar resultados individuais'")
+            return True
+        self._forms_aberto = False
+        self.erro_extracao = (
+            "Nao foi possivel abrir 'Verificar resultados individuais' no Forms "
+            "(botao/menu nao encontrado) — nenhum dado foi extraido"
+        )
+        logger.error(f"[FORMS] {self.erro_extracao}")
+        return False
 
     async def _avancar_resposta(self) -> bool:
         """Clica na seta para frente (próxima resposta).
