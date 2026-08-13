@@ -96,13 +96,86 @@ def test_lote_grava_varios_campos_num_unico_evaluate():
     assert len(chamadas) == 1  # um unico round-trip ao DOM
 
 
-def test_datajud_nao_sobrescreve_valor_causa_do_forms():
+def _bot_datajud(hits):
+    """Bot cru com o cliente DataJud trocado por um fake. Devolve (bot, restaurar)."""
     bot = object.__new__(LegalOneCadastro)
     bot._valor_limpo = lambda v: LegalOneCadastro._valor_limpo(bot, v)
+    bot._texto_forms_invalido = lambda v: False
     bot._parse_moeda_br = LegalOneCadastro._parse_moeda_br
-    dados = {"cnj": "0013231-78.2024.5.15.0077", "valor_causa": "10.000,00"}
-    bot._enriquecer_dados_datajud(dados)
-    assert dados["valor_causa"] == "10.000,00"
+
+    class FakeClient:
+        def consultar(self, cnj):
+            return hits
+
+    import datajud_client
+    original = datajud_client.DatajudClient
+    datajud_client.DatajudClient = FakeClient
+    return bot, (lambda: setattr(datajud_client, "DatajudClient", original))
+
+
+def test_datajud_nao_sobrescreve_valor_causa_do_forms():
+    bot, restaurar = _bot_datajud([{"valorAcao": 999.0}])
+    try:
+        dados = {"cnj": "0013231-78.2024.5.15.0077", "valor_causa": "10.000,00"}
+        bot._enriquecer_dados_datajud(dados)
+        assert dados["valor_causa"] == "10.000,00"
+    finally:
+        restaurar()
+
+
+def test_datajud_completa_capa_do_processo():
+    """O que a peticao nao traz (capa de rosto) vem do DataJud."""
+    bot, restaurar = _bot_datajud([{
+        "dataAjuizamento": "2024-03-11T00:00:00.000Z",
+        "orgaoJulgador": {"nome": "1a Vara do Trabalho de Belo Horizonte"},
+        "classe": {"nome": "Acao Trabalhista - Rito Ordinario"},
+        "valorAcao": 75911.0,
+    }])
+    try:
+        dados = {
+            "cnj": "0010555-44.2025.5.03.0012",
+            "data_distribuicao": "NAO LOCALIZADO",   # placeholder conta como vazio
+            "outros_dados": {},
+        }
+        bot._enriquecer_dados_datajud(dados)
+        assert dados["data_distribuicao"] == "11/03/2024"
+        assert dados["nome_vara_turma"] == "1a Vara do Trabalho de Belo Horizonte"
+        assert dados["tipo_classe_recurso"] == "Acao Trabalhista - Rito Ordinario"
+        assert dados["valor_causa"] == "75.911,00"
+        assert dados["outros_dados"]["data_distribuicao"] == "11/03/2024"
+    finally:
+        restaurar()
+
+
+def test_datajud_nao_consulta_quando_nada_falta():
+    """Todos os campos da capa preenchidos: nem toca no cliente."""
+    def explode(cnj):
+        raise AssertionError("nao devia consultar o DataJud")
+
+    bot, restaurar = _bot_datajud([])
+    import datajud_client
+    datajud_client.DatajudClient.consultar = lambda self, cnj: explode(cnj)
+    try:
+        dados = {
+            "cnj": "0010555-44.2025.5.03.0012",
+            "valor_causa": "10.000,00",
+            "data_distribuicao": "01/02/2024",
+            "nome_vara_turma": "1a Vara",
+            "tipo_classe_recurso": "Recurso Ordinario",
+        }
+        bot._enriquecer_dados_datajud(dados)
+    finally:
+        restaurar()
+
+
+def test_alias_datajud_cobre_tribunal_fora_do_mapa():
+    """TRT8/TJPA nao estao no _ALIAS_MAP escrito a mao — caem na regra J.TR."""
+    from datajud_client import DatajudClient
+    r = DatajudClient()._resolver_alias
+    assert r("0010555-44.2025.5.03.0012") == "api_publica_trt3"   # do mapa
+    assert r("0000123-45.2024.5.08.0009") == "api_publica_trt8"   # do fallback
+    assert r("0000123-45.2024.8.14.0001") == "api_publica_tjpa"
+    assert r("123") is None
 
 
 def test_datajud_completa_valor_causa_ausente():

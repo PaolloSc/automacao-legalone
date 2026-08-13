@@ -180,8 +180,13 @@ def taxas(alias: str, quantos: int = 60) -> list[dict]:
         "query": ({"match": {"grau": grau}} if grau else {"match_all": {}}),
         "aggs": {"assunto": {
             "terms": {"field": "assuntos.nome.keyword", "size": quantos},
+            # O codigo TPU do proprio assunto do bucket: ele esta' em TODOS os
+            # processos do bucket, entao e' o mais frequente. Sem ele a tabela
+            # so' casa por texto -- que e' o que o codigo existe para evitar.
             "aggs": {"decididos": {"filter": m["decididos"]},
-                     "contra": {"filter": m["contra"]}}}},
+                     "contra": {"filter": m["contra"]},
+                     "codigo": {"terms": {"field": "assuntos.codigo",
+                                          "size": 1}}}}},
     })
     if not r:
         return []
@@ -191,8 +196,9 @@ def taxas(alias: str, quantos: int = 60) -> list[dict]:
         if decididos < 500:  # amostra pequena demais para virar percentual
             continue
         pct = 100 * b["contra"]["doc_count"] / decididos
-        linhas.append({"assunto": b["key"], "decididos": decididos,
-                       "taxa": round(pct, 1)})
+        cods = (b.get("codigo") or {}).get("buckets") or [{}]
+        linhas.append({"codigo": cods[0].get("key"), "assunto": b["key"],
+                       "decididos": decididos, "taxa": round(pct, 1)})
     linhas.sort(key=lambda x: x["taxa"])
     ca, cb = cortes([l["taxa"] for l in linhas])
     for l in linhas:
@@ -268,11 +274,14 @@ def markdown(alias: str) -> str:
          " extremos da tabela. No meio, use a porcentagem, nao o rotulo."
          if cb - ca < LARGURA_MINIMA else ""),
         "",
-        f"| Pedido (assunto TPU) | Decididos | {rot} | risco |",
-        "|---|---:|---:|---|",
+        # A coluna do codigo TPU e' o que o bot casa (o nome varia de grafia
+        # entre tribunal e peticao); o nome fica para quem le'.
+        f"| Codigo | Pedido (assunto TPU) | Decididos | {rot} | risco |",
+        "|---:|---|---:|---:|---|",
     ]
     for l in linhas:
-        out.append(f'| {l["assunto"]} | {l["decididos"]} |'
+        out.append(f'| {l["codigo"] if l["codigo"] is not None else ""} |'
+                   f' {l["assunto"]} | {l["decididos"]} |'
                    f' {l["taxa"]}% | {l["risco"]} |')
     out += ["", f"Gerado por `jurimetria_datajud.py` em"
                 f" {time.strftime('%d/%m/%Y')}."]

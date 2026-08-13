@@ -53,3 +53,6 @@ qa_screenshots/
 debug_visaofill_*.png
 debug_forms_dump.html
 ultimo_processo.txt
+
+# Estado local de ferramentas de agente
+.claude/

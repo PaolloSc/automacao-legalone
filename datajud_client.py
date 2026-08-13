@@ -41,8 +41,8 @@ _ALIAS_MAP: dict[tuple[str, str], str] = {
     ("4", "03"): "api_publica_trf3",
     ("4", "04"): "api_publica_trf4",
     ("4", "05"): "api_publica_trf5",
-    # Superiores
-    ("7", "00"): "api_publica_stj",
+    # Superiores. STJ e' J=3 (cai no fallback); J=7 e' militar da Uniao — a
+    # entrada antiga mandava CNJ militar para o indice do STJ.
     ("1", "00"): "api_publica_stf",
     ("5", "00"): "api_publica_tst",
 }
@@ -78,7 +78,17 @@ class DatajudClient:
         else:
             j = m.group(4)
             tr = m.group(5)
-        return _ALIAS_MAP.get((j, tr))
+        alias = _ALIAS_MAP.get((j, tr))
+        if alias:
+            return alias
+        # O mapa acima so tem os tribunais mais vistos. O resto sai da mesma
+        # regra J.TR ja implementada na jurimetria (todos os TJs/TRTs/TRFs).
+        try:
+            from jurimetria_datajud import alias_do_cnj
+            curto = alias_do_cnj(cnj)
+        except Exception:
+            return None
+        return f"api_publica_{curto}" if curto else None
 
     def consultar(self, cnj: str) -> list[dict]:
         """Consulta Datajud pelo CNJ e retorna lista de hits (_source)."""

@@ -231,6 +231,19 @@ python jurimetria_datajud.py trt3 tjmg  # só alguns
 python jurimetria_datajud.py --demo     # self-check das faixas
 ```
 
+Desde 13/08/2026 a tabela tem uma coluna `Codigo` (o código TPU do assunto) na
+frente do nome. É por ela que o bot casa: `jurimetria_risco.py` lê o `.md` e
+resolve o `risco` a partir de `assuntos[].codigo` do mesmo hit do DataJud que
+traz a capa do processo — sem depender de o agente acertar a grafia do assunto.
+O bot só preenche `risco` quando o campo chega vazio (ou `NAO LOCALIZADO`), e
+usa o assunto **principal** (o primeiro da lista); assunto fora da tabela fica
+de fora em vez de virar "Médio". O detalhe por assunto vai para
+`outros_dados['justificativa_risco']`.
+
+> Regenerar as tabelas localmente **não** atualiza o agente: os `.md` anexados
+> como Conhecimento no Copilot Studio são cópias. Depois de rodar
+> `--todos`, é preciso re-subir os arquivos no Studio.
+
 Decisões que valem lembrar:
 
 - **Arquivo, não consulta ao vivo.** Metade das chamadas ao DataJud volta

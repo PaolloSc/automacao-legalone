@@ -6,62 +6,64 @@ Como ler: a taxa e' do PROCESSO que contem aquele pedido, nao do pedido isolado.
 
 So vale para pedido CONTENCIOSO. Materia sem lide (inventario, divorcio consensual, jurisdicao voluntaria) quase nunca da' improcedente, entao aparece como risco Alto sem querer dizer nada. Ignore a linha nesses casos.
 
-`risco`: improcedencia < 15.7% = Alto | ate' 28.4% = Medio | acima = Baixo (tercis desta tabela).
+`risco`: improcedencia < 16.0% = Alto | ate' 28.5% = Medio | acima = Baixo (tercis desta tabela).
 
-| Pedido (assunto TPU) | Decididos | Improcedencia | risco |
-|---|---:|---:|---|
-| Concurso de Credores | 15334 | 1.5% | Alto |
-| Classificação de créditos | 12464 | 1.6% | Alto |
-| Inventário e Partilha | 75870 | 1.8% | Alto |
-| Recuperação judicial e Falência | 17691 | 2.7% | Alto |
-| Fornecimento de medicamentos | 15730 | 4.9% | Alto |
-| Nulidade | 5268 | 6.3% | Alto |
-| Locação de Imóvel | 12029 | 7.0% | Alto |
-| Alimentos | 6305 | 8.6% | Alto |
-| Crimes do Sistema Nacional de Armas | 16702 | 9.7% | Alto |
-| Cobrança de Aluguéis - Sem despejo | 10219 | 11.1% | Alto |
-| Despesas Condominiais | 12902 | 11.3% | Alto |
-| Roubo  | 20084 | 11.3% | Alto |
-| Tráfico de Drogas e Condutas Afins | 44328 | 13.2% | Alto |
-| Enriquecimento sem Causa | 18361 | 13.9% | Alto |
-| Tratamento médico-hospitalar | 11568 | 14.0% | Alto |
-| Receptação | 8822 | 14.4% | Alto |
-| Fornecimento de Energia Elétrica | 36002 | 15.2% | Alto |
-| Prisão em flagrante | 21042 | 15.7% | Medio |
-| Pagamento | 26913 | 16.2% | Medio |
-| Aplicação da Pena | 23309 | 16.9% | Medio |
-| Alienação Fiduciária | 12063 | 17.0% | Medio |
-| Prestação de Serviços | 8145 | 17.7% | Medio |
-| Antecipação de Tutela / Tutela Específica | 110620 | 18.3% | Medio |
-| Crimes de Trânsito | 3423 | 18.4% | Medio |
-| Furto  | 16029 | 18.8% | Medio |
-| Indenização por Dano Moral | 262473 | 19.5% | Medio |
-| Roubo Majorado | 25644 | 20.4% | Medio |
-| Liminar  | 12541 | 20.9% | Medio |
-| Obrigação de Fazer / Não Fazer | 15588 | 22.8% | Medio |
-| Inclusão Indevida em Cadastro de Inadimplentes | 76851 | 25.0% | Medio |
-| Indenização por Dano Material | 84565 | 25.1% | Medio |
-| Repetição do Indébito | 22495 | 27.0% | Medio |
-| Cédula de Crédito Bancário | 4193 | 27.8% | Medio |
-| Crédito Complementar | 44104 | 28.2% | Medio |
-| Acidente de Trânsito | 92140 | 28.3% | Medio |
-| Direito de Imagem | 75921 | 28.4% | Medio |
-| Estelionato | 3576 | 28.8% | Baixo |
-| Defeito, nulidade ou anulação | 16382 | 29.9% | Baixo |
-| Seguro | 8287 | 30.4% | Baixo |
-| Abatimento proporcional do preço  | 11688 | 31.9% | Baixo |
-| Contratos Bancários | 20663 | 33.0% | Baixo |
-| Esbulho / Turbação / Ameaça | 9067 | 33.6% | Baixo |
-| Contravenções Penais | 56185 | 35.3% | Baixo |
-| Cláusulas Abusivas | 9175 | 37.8% | Baixo |
-| IPTU/ Imposto Predial e Territorial Urbano | 4201 | 39.0% | Baixo |
-| Cartão de Crédito | 11453 | 39.2% | Baixo |
-| Empréstimo consignado | 13059 | 39.3% | Baixo |
-| Ameaça  | 15472 | 43.6% | Baixo |
-| Dívida Ativa (Execução Fiscal) | 15412 | 44.1% | Baixo |
-| ISS/ Imposto sobre Serviços | 1409 | 46.0% | Baixo |
-| Decorrente de Violência Doméstica | 22204 | 46.2% | Baixo |
-| Impostos | 9123 | 47.8% | Baixo |
-| ICMS/ Imposto sobre Circulação de Mercadorias | 4217 | 61.6% | Baixo |
 
-Gerado por `jurimetria_datajud.py` em 06/08/2026.
+
+| Codigo | Pedido (assunto TPU) | Decididos | Improcedencia | risco |
+|---:|---|---:|---:|---|
+| 5000 | Concurso de Credores | 25438 | 1.5% | Alto |
+| 9559 | Classificação de créditos | 20869 | 1.5% | Alto |
+| 7687 | Inventário e Partilha | 126770 | 1.7% | Alto |
+| 4993 | Recuperação judicial e Falência | 29631 | 2.7% | Alto |
+| 12484 | Fornecimento de medicamentos | 26209 | 4.8% | Alto |
+| 8919 | Nulidade | 8709 | 6.3% | Alto |
+| 9593 | Locação de Imóvel | 19962 | 7.0% | Alto |
+| 3633 | Crimes do Sistema Nacional de Armas | 27735 | 9.6% | Alto |
+| 3419 | Roubo  | 33567 | 11.1% | Alto |
+| 11000 | Cobrança de Aluguéis - Sem despejo | 17035 | 11.2% | Alto |
+| 10467 | Despesas Condominiais | 21537 | 11.4% | Alto |
+| 3608 | Tráfico de Drogas e Condutas Afins | 73941 | 13.2% | Alto |
+| 7715 | Enriquecimento sem Causa | 30497 | 13.9% | Alto |
+| 12489 | Tratamento médico-hospitalar | 19491 | 13.9% | Alto |
+| 3435 | Receptação | 14807 | 14.3% | Alto |
+| 7760 | Fornecimento de Energia Elétrica | 59896 | 15.2% | Alto |
+| 7929 | Prisão em flagrante | 35274 | 15.7% | Alto |
+| 7703 | Pagamento | 44930 | 16.0% | Medio |
+| 10621 | Aplicação da Pena | 38820 | 16.8% | Medio |
+| 9582 | Alienação Fiduciária | 20143 | 17.1% | Medio |
+| 9596 | Prestação de Serviços | 13626 | 17.7% | Medio |
+| 8961 | Antecipação de Tutela / Tutela Específica | 184020 | 18.3% | Medio |
+| 3416 | Furto  | 26789 | 18.7% | Medio |
+| 3632 | Crimes de Trânsito | 5685 | 18.7% | Medio |
+| 7779 | Indenização por Dano Moral | 436852 | 19.6% | Medio |
+| 5566 | Roubo Majorado | 42463 | 20.6% | Medio |
+| 9196 | Liminar  | 20994 | 21.0% | Medio |
+| 10671 | Obrigação de Fazer / Não Fazer | 26197 | 23.1% | Medio |
+| 6226 | Inclusão Indevida em Cadastro de Inadimplentes | 128522 | 24.9% | Medio |
+| 10439 | Indenização por Dano Material | 140941 | 25.2% | Medio |
+| 14925 | Repetição do Indébito | 37591 | 27.0% | Medio |
+| 3431 | Estelionato | 6001 | 27.0% | Medio |
+| 10680 | Crédito Complementar | 73787 | 28.1% | Medio |
+| 4960 | Cédula de Crédito Bancário | 7001 | 28.2% | Medio |
+| 10441 | Acidente de Trânsito | 153720 | 28.4% | Medio |
+| 10443 | Direito de Imagem | 126587 | 28.5% | Medio |
+| 4703 | Defeito, nulidade ou anulação | 27435 | 30.0% | Baixo |
+| 9597 | Seguro | 13922 | 30.2% | Baixo |
+| 7769 | Abatimento proporcional do preço  | 19355 | 31.9% | Baixo |
+| 9607 | Contratos Bancários | 34459 | 32.8% | Baixo |
+| 10445 | Esbulho / Turbação / Ameaça | 15194 | 33.7% | Baixo |
+| 3692 | Contravenções Penais | 93622 | 35.4% | Baixo |
+| 11974 | Cláusulas Abusivas | 15103 | 37.1% | Baixo |
+| 9585 | Cartão de Crédito | 18993 | 38.8% | Baixo |
+| 5952 | IPTU/ Imposto Predial e Territorial Urbano | 6981 | 39.1% | Baixo |
+| 11806 | Empréstimo consignado | 21491 | 39.1% | Baixo |
+| 3402 | Ameaça  | 25856 | 43.3% | Baixo |
+| 6017 | Dívida Ativa (Execução Fiscal) | 25609 | 43.6% | Baixo |
+| 5951 | ISS/ Imposto sobre Serviços | 2347 | 45.5% | Baixo |
+| 5560 | Decorrente de Violência Doméstica | 37061 | 46.3% | Baixo |
+| 5916 | Impostos | 15117 | 47.1% | Baixo |
+| 5946 | ICMS/ Imposto sobre Circulação de Mercadorias | 7061 | 61.5% | Baixo |
+| 10395 | Multas e demais Sanções | 4518 | 62.6% | Baixo |
+
+Gerado por `jurimetria_datajud.py` em 13/08/2026.

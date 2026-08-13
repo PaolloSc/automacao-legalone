@@ -1721,6 +1721,12 @@ class LegalOneCadastro:
             "nao informado",
             "não informada",
             "nao informada",
+            # Marcador que o agente do Copilot escreve quando nao acha o campo
+            # na peticao. Sem isso vira texto digitado na ficha do LegalOne.
+            "não localizado",
+            "nao localizado",
+            "não localizada",
+            "nao localizada",
             "n/a",
             "na",
             "-",
@@ -8160,8 +8166,52 @@ class LegalOneCadastro:
         )
         return ok, falhas
 
+    # Campos que o DataJud sabe responder — sao os da capa de rosto, que a
+    # peticao quase nunca traz (o Copilot devolve 'NAO LOCALIZADO' neles).
+    _DATAJUD_CAMPOS = ('valor_causa', 'data_distribuicao',
+                       'nome_vara_turma', 'tipo_classe_recurso', 'risco')
+
+    @staticmethod
+    def _dj_dict(valor) -> dict:
+        return valor if isinstance(valor, dict) else {}
+
+    @staticmethod
+    def _dj_data_br(bruto) -> str | None:
+        """'2024-03-11T00:00:00Z' ou '20240311000000' -> '11/03/2024'."""
+        d = re.sub(r'\D', '', str(bruto or ''))[:8]
+        return f"{d[6:8]}/{d[4:6]}/{d[:4]}" if len(d) == 8 else None
+
+    def _dj_valor_causa(self, src: dict, db: dict) -> str | None:
+        bruto = (src.get('valorAcao') or src.get('valorCausa') or src.get('valor')
+                 or db.get('valorCausa') or db.get('valorAcao'))
+        numero = self._parse_moeda_br(bruto)
+        if numero is None:
+            return None
+        return f"{numero:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+
+    def _dj_risco(self, src: dict, cnj) -> tuple[str | None, str]:
+        """Risco pelo CODIGO TPU do assunto, na tabela de jurimetria do tribunal.
+
+        O agente casa o assunto por texto e erra na grafia; o codigo vem no
+        mesmo hit da capa. Assunto fora da tabela nao entra — sem base e' sem
+        base, nunca 'Medio'.
+        """
+        try:
+            from jurimetria_risco import risco_do_processo
+            alias = str(src.get('tribunal') or '')
+            if not alias:
+                from jurimetria_datajud import alias_do_cnj
+                alias = alias_do_cnj(str(cnj)) or ''
+            risco, detalhe = risco_do_processo(alias, src.get('assuntos'))
+        except Exception as e:
+            logger.info(f"   [DATAJUD] risco por TPU indisponivel: {e}")
+            return None, ''
+        # A tabela e' gerada sem acento; o campo do LegalOne tem.
+        return {'Medio': 'Médio'}.get(risco, risco), detalhe
+
     def _enriquecer_dados_datajud(self, dados_processo: dict | None) -> None:
-        """Puxa do DataJud o que o Forms nao trouxe (valor da causa etc.).
+        """Puxa do DataJud a capa do processo: valor da causa, distribuicao,
+        vara/orgao julgador e classe CNJ.
 
         So completa campos vazios — nunca sobrescreve resposta do Forms.
         """
@@ -8176,7 +8226,9 @@ class LegalOneCadastro:
             outros = {}
             dados['outros_dados'] = outros
 
-        if self._valor_limpo(dados.get('valor_causa') or outros.get('valor_causa')):
+        pendentes = [c for c in self._DATAJUD_CAMPOS
+                     if not self._valor_limpo(dados.get(c) or outros.get(c))]
+        if not pendentes:
             return
         try:
             from datajud_client import DatajudClient
@@ -8187,19 +8239,28 @@ class LegalOneCadastro:
         if not hits:
             logger.info(f"   [DATAJUD] sem hits para {cnj}")
             return
-        src = hits[0] if isinstance(hits[0], dict) else {}
-        valor_bruto = src.get('valorAcao') or src.get('valorCausa') or src.get('valor')
-        db = src.get('dadosBasicos')
-        if valor_bruto in (None, '') and isinstance(db, dict):
-            valor_bruto = db.get('valorCausa') or db.get('valorAcao')
-        numero = self._parse_moeda_br(valor_bruto)
-        if numero is None:
-            logger.info("   [DATAJUD] hit sem valor da causa utilizavel")
-            return
-        formatado = f"{numero:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
-        dados['valor_causa'] = formatado
-        outros.setdefault('valor_causa', formatado)
-        logger.info(f"   [DATAJUD] valor_causa={formatado}")
+        src = self._dj_dict(hits[0])
+        db = self._dj_dict(src.get('dadosBasicos'))
+        risco, detalhe_risco = self._dj_risco(src, cnj)
+        capa = {
+            'risco': risco,
+            'valor_causa': self._dj_valor_causa(src, db),
+            'data_distribuicao': self._dj_data_br(
+                src.get('dataAjuizamento') or db.get('dataAjuizamento')),
+            'nome_vara_turma': self._dj_dict(src.get('orgaoJulgador')).get('nome'),
+            'tipo_classe_recurso': self._dj_dict(src.get('classe')).get('nome'),
+        }
+        for campo in pendentes:
+            valor = capa.get(campo)
+            if not valor:
+                logger.info(f"   [DATAJUD] hit sem {campo}")
+                continue
+            dados[campo] = valor
+            outros.setdefault(campo, valor)
+            logger.info(f"   [DATAJUD] {campo}={valor}")
+            if campo == 'risco' and detalhe_risco:
+                outros.setdefault('justificativa_risco', detalhe_risco)
+                logger.info(f"   [DATAJUD] risco por assunto: {detalhe_risco}")
 
     def _preencher_classificacoes_pedidos(self, dados_processo: dict | None) -> tuple[int, int]:
         """Situacao / Motivo da situacao / Valor deferido de cada pedido ja

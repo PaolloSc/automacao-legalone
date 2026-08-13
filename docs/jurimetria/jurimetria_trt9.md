@@ -1,74 +1,76 @@
 # Jurimetria TRT9 - 1o grau (fonte: DataJud/CNJ)
 
-Media do tribunal: **26.0%** de improcedencia entre os processos com sentenca de merito.
+Media do tribunal: **25.9%** de improcedencia entre os processos com sentenca de merito.
 
 Como ler: a taxa e' do PROCESSO que contem aquele pedido, nao do pedido isolado. Serve para comparar com a media -- pedido rejeitado MENOS que a media e' o que mais ameaca quem se defende.
 
 So vale para pedido CONTENCIOSO. Materia sem lide (inventario, divorcio consensual, jurisdicao voluntaria) quase nunca da' improcedente, entao aparece como risco Alto sem querer dizer nada. Ignore a linha nesses casos.
 
-`risco`: improcedencia < 21.8% = Alto | ate' 24.8% = Medio | acima = Baixo (tercis desta tabela).
+`risco`: improcedencia < 21.5% = Alto | ate' 24.6% = Medio | acima = Baixo (tercis desta tabela).
 
-| Pedido (assunto TPU) | Decididos | Improcedencia | risco |
-|---|---:|---:|---|
-| Responsabilidade Solidária/Subsidiária | 7585 | 18.0% | Alto |
-| Verbas Rescisórias | 114566 | 18.2% | Alto |
-| Multa do Artigo 467 da CLT  | 82210 | 18.2% | Alto |
-| Multa do Artigo  477 da CLT | 109260 | 18.3% | Alto |
-| Grupo Econômico | 22745 | 18.3% | Alto |
-| Saldo de Salário | 23973 | 18.4% | Alto |
-| Multa Prevista em Norma Coletiva | 24864 | 18.8% | Alto |
-| Rescisão Indireta | 48108 | 19.0% | Alto |
-| Anotação/Baixa/Retificação | 34739 | 19.0% | Alto |
-| Multa Convencional  | 42557 | 19.1% | Alto |
-| Depósito/Diferenças | 29951 | 19.6% | Alto |
-| Liberação/Entrega das Guias | 13495 | 19.7% | Alto |
-| Aviso Prévio | 75769 | 20.1% | Alto |
-| Salário por Fora - Integração | 19944 | 20.2% | Alto |
-| Seguro Desemprego | 20155 | 20.3% | Alto |
-| FGTS | 89582 | 20.6% | Alto |
-| Multa de 40% do FGTS | 96082 | 20.8% | Alto |
-| Anotação/Retenção da CTPS | 10597 | 20.8% | Alto |
-| Integração em Verbas Rescisórias | 12987 | 20.9% | Alto |
-| Décimo Terceiro Salário Proporcional | 36765 | 21.5% | Alto |
-| Férias / Gozo / Fruição  | 33836 | 21.8% | Medio |
-| Indenização/Dobra/Terço Constitucional | 27761 | 21.8% | Medio |
-| Férias Proporcionais | 39489 | 22.2% | Medio |
-| Auxílio/Tíquete Alimentação | 29124 | 22.6% | Medio |
-| Horas Extras  | 35297 | 22.7% | Medio |
-| Assistência Judiciária Gratuita | 149689 | 22.8% | Medio |
-| intervalo Interjonadas | 31163 | 23.0% | Medio |
-| Décimo Terceiro Salário | 28665 | 23.2% | Medio |
-| Base de Cálculo | 15416 | 23.2% | Medio |
-| Adicional de Insalubridade | 92292 | 23.5% | Medio |
-| Adicional de Hora Extra | 42478 | 23.6% | Medio |
-| Trabalho aos Domingos | 12768 | 23.7% | Medio |
-| Intervalo Intrajornada | 87985 | 23.8% | Medio |
-| Adicional de Horas Extras | 75714 | 23.8% | Medio |
-| Indenização por Dano Moral | 125236 | 23.9% | Medio |
-| Horas Extras | 131663 | 23.9% | Medio |
-| Reconhecimento de Relação de Emprego | 47473 | 24.0% | Medio |
-| Adicional Noturno | 53517 | 24.1% | Medio |
-| Repouso Semanal Remunerado e Feriado | 27379 | 24.4% | Medio |
-| Juros | 12813 | 24.7% | Medio |
-| Férias | 6221 | 24.8% | Medio |
-| Reflexos | 52558 | 25.0% | Baixo |
-| Honorários Advocatícios | 92469 | 25.4% | Baixo |
-| Salário/Diferença Salarial | 45772 | 25.5% | Baixo |
-| Honorários na Justiça do Trabalho  | 16790 | 25.9% | Baixo |
-| Adicional de Periculosidade | 29399 | 26.7% | Baixo |
-| Assédio Moral | 33528 | 26.8% | Baixo |
-| Sobreaviso/Prontidão/Tempo à Disposição | 15580 | 26.8% | Baixo |
-| Sucumbência  | 9166 | 27.0% | Baixo |
-| Correção Monetária | 31480 | 27.3% | Baixo |
-| Sucumbenciais  | 6013 | 27.3% | Baixo |
-| Diferenças por Desvio de Função | 13034 | 27.6% | Baixo |
-| Salário por Acúmulo de Cargo/Função | 8840 | 27.8% | Baixo |
-| Acúmulo de Função | 12303 | 28.4% | Baixo |
-| Indenização por Dano Material | 21252 | 29.2% | Baixo |
-| Acidente de Trabalho | 25733 | 29.8% | Baixo |
-| Salário por Equiparação/Isonomia | 17151 | 30.4% | Baixo |
-| Doença Ocupacional | 16345 | 32.0% | Baixo |
-| Atos executórios | 3799 | 32.2% | Baixo |
-| Desconfiguração de Justa Causa | 10302 | 34.9% | Baixo |
 
-Gerado por `jurimetria_datajud.py` em 06/08/2026.
+
+| Codigo | Pedido (assunto TPU) | Decididos | Improcedencia | risco |
+|---:|---|---:|---:|---|
+| 13864 | Vale Transporte | 11091 | 17.8% | Alto |
+| 14034 | Responsabilidade Solidária/Subsidiária | 7508 | 18.0% | Alto |
+| 13970 | Verbas Rescisórias | 113502 | 18.2% | Alto |
+| 13999 | Multa do Artigo 467 da CLT  | 81586 | 18.2% | Alto |
+| 14000 | Multa do Artigo  477 da CLT | 108455 | 18.3% | Alto |
+| 14001 | Saldo de Salário | 23777 | 18.3% | Alto |
+| 14036 | Grupo Econômico | 22530 | 18.3% | Alto |
+| 13850 | Multa Prevista em Norma Coletiva | 24662 | 18.7% | Alto |
+| 13968 | Rescisão Indireta | 47621 | 19.0% | Alto |
+| 13481 | Multa Convencional  | 42285 | 19.0% | Alto |
+| 13745 | Anotação/Baixa/Retificação | 34424 | 19.0% | Alto |
+| 13749 | Depósito/Diferenças | 29797 | 19.5% | Alto |
+| 13993 | Liberação/Entrega das Guias | 13375 | 19.6% | Alto |
+| 13994 | Aviso Prévio | 75206 | 20.0% | Alto |
+| 13969 | Seguro Desemprego | 19947 | 20.2% | Alto |
+| 13940 | Salário por Fora - Integração | 19706 | 20.2% | Alto |
+| 13719 | FGTS | 88891 | 20.6% | Alto |
+| 14017 | Anotação/Retenção da CTPS | 10496 | 20.6% | Alto |
+| 13998 | Multa de 40% do FGTS | 95344 | 20.7% | Alto |
+| 13924 | Integração em Verbas Rescisórias | 12839 | 20.8% | Alto |
+| 13995 | Décimo Terceiro Salário Proporcional | 36472 | 21.5% | Medio |
+| 13432 | Férias / Gozo / Fruição  | 33447 | 21.7% | Medio |
+| 13814 | Indenização/Dobra/Terço Constitucional | 27546 | 21.7% | Medio |
+| 13996 | Férias Proporcionais | 39181 | 22.2% | Medio |
+| 13863 | Auxílio/Tíquete Alimentação | 28915 | 22.5% | Medio |
+| 13186 | Horas Extras  | 34939 | 22.7% | Medio |
+| 8843 | Assistência Judiciária Gratuita | 148486 | 22.8% | Medio |
+| 13771 | intervalo Interjonadas | 30943 | 22.9% | Medio |
+| 13843 | Décimo Terceiro Salário | 28403 | 23.1% | Medio |
+| 13788 | Base de Cálculo | 15315 | 23.2% | Medio |
+| 13875 | Adicional de Insalubridade | 91820 | 23.5% | Medio |
+| 13799 | Adicional de Hora Extra | 42195 | 23.6% | Medio |
+| 13806 | Trabalho aos Domingos | 12687 | 23.6% | Medio |
+| 13772 | Intervalo Intrajornada | 87186 | 23.7% | Medio |
+| 14010 | Indenização por Dano Moral | 123871 | 23.8% | Medio |
+| 13787 | Adicional de Horas Extras | 75166 | 23.8% | Medio |
+| 13769 | Horas Extras | 130507 | 23.9% | Medio |
+| 13722 | Reconhecimento de Relação de Emprego | 46945 | 24.0% | Medio |
+| 13765 | Adicional Noturno | 53115 | 24.1% | Medio |
+| 13773 | Repouso Semanal Remunerado e Feriado | 27177 | 24.3% | Medio |
+| 10684 | Juros | 12699 | 24.6% | Medio |
+| 13809 | Férias | 6168 | 24.8% | Baixo |
+| 13796 | Reflexos | 52145 | 24.9% | Baixo |
+| 10655 | Honorários Advocatícios | 91791 | 25.4% | Baixo |
+| 13858 | Salário/Diferença Salarial | 45331 | 25.4% | Baixo |
+| 13184 | Honorários na Justiça do Trabalho  | 16668 | 25.8% | Baixo |
+| 14018 | Assédio Moral | 32903 | 26.7% | Baixo |
+| 13877 | Adicional de Periculosidade | 29243 | 26.7% | Baixo |
+| 13774 | Sobreaviso/Prontidão/Tempo à Disposição | 15462 | 26.7% | Baixo |
+| 8874 | Sucumbência  | 9099 | 27.0% | Baixo |
+| 8843 | Correção Monetária | 31238 | 27.2% | Baixo |
+| 13537 | Sucumbenciais  | 5956 | 27.2% | Baixo |
+| 13922 | Diferenças por Desvio de Função | 12911 | 27.5% | Baixo |
+| 13732 | Acúmulo de Função | 12193 | 28.4% | Baixo |
+| 14009 | Indenização por Dano Material | 20921 | 29.2% | Baixo |
+| 14016 | Acidente de Trabalho | 25447 | 29.7% | Baixo |
+| 13939 | Salário por Equiparação/Isonomia | 16956 | 30.4% | Baixo |
+| 14024 | Doença Ocupacional | 16151 | 31.9% | Baixo |
+| 11786 | Atos executórios | 3769 | 32.1% | Baixo |
+| 14023 | Desconfiguração de Justa Causa | 9945 | 34.6% | Baixo |
+
+Gerado por `jurimetria_datajud.py` em 13/08/2026.

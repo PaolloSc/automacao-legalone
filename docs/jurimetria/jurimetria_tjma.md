@@ -6,63 +6,67 @@ Como ler: a taxa e' do PROCESSO que contem aquele pedido, nao do pedido isolado.
 
 So vale para pedido CONTENCIOSO. Materia sem lide (inventario, divorcio consensual, jurisdicao voluntaria) quase nunca da' improcedente, entao aparece como risco Alto sem querer dizer nada. Ignore a linha nesses casos.
 
-`risco`: improcedencia < 26.6% = Alto | ate' 44.0% = Medio | acima = Baixo (tercis desta tabela).
+`risco`: improcedencia < 24.1% = Alto | ate' 43.7% = Medio | acima = Baixo (tercis desta tabela).
 
-| Pedido (assunto TPU) | Julgados | Improcedencia | risco |
-|---|---:|---:|---|
-| Registro de Óbito após prazo legal | 18127 | 1.2% | Alto |
-| Nomeação | 10508 | 2.6% | Alto |
-| Inventário e Partilha | 4056 | 5.6% | Alto |
-| Alienação Fiduciária | 9448 | 10.0% | Alto |
-| Busca e Apreensão | 1820 | 10.5% | Alto |
-| Duplicata | 871 | 10.9% | Alto |
-| Crimes do Sistema Nacional de Armas | 5247 | 14.0% | Alto |
-| Roubo Majorado | 8398 | 16.1% | Alto |
-| Furto Qualificado  | 2830 | 18.0% | Alto |
-| Compra e Venda | 3034 | 20.3% | Alto |
-| Correção Monetária | 2745 | 20.4% | Alto |
-| Crimes de Trânsito | 1726 | 20.5% | Alto |
-| Levantamento de Valor | 9356 | 21.3% | Alto |
-| Furto  | 2475 | 21.3% | Alto |
-| Seguro | 17656 | 21.4% | Alto |
-| Receptação | 2155 | 22.6% | Alto |
-| Pagamento | 2747 | 23.3% | Alto |
-| Prestação de Serviços | 7738 | 23.8% | Alto |
-| Leve | 1501 | 26.6% | Medio |
-| Homicídio Qualificado | 2804 | 27.3% | Medio |
-| Tráfico de Drogas e Condutas Afins | 6914 | 27.4% | Medio |
-| Homicídio Simples | 2164 | 30.3% | Medio |
-| Base de Cálculo | 5100 | 32.0% | Medio |
-| Obrigação de Fazer / Não Fazer | 24078 | 32.2% | Medio |
-| Análise de Crédito | 3059 | 35.6% | Medio |
-| Cédula de Crédito Bancário | 1305 | 35.8% | Medio |
-| Ameaça  | 4873 | 36.4% | Medio |
-| Acidente de Trânsito | 11443 | 36.7% | Medio |
-| Liminar  | 18174 | 36.9% | Medio |
-| Perdas e Danos | 9816 | 38.2% | Medio |
-| Contra a Mulher | 7100 | 40.4% | Medio |
-| Repetição do Indébito | 8991 | 40.5% | Medio |
-| Violência Doméstica Contra a Mulher | 3206 | 40.8% | Medio |
-| Concessão | 6440 | 41.6% | Medio |
-| Práticas Abusivas | 22848 | 42.0% | Medio |
-| Protesto Indevido de Título | 5681 | 43.7% | Medio |
-| Abatimento proporcional do preço  | 12589 | 44.0% | Medio |
-| Fornecimento de Energia Elétrica | 12028 | 44.0% | Medio |
-| Cartão de Crédito | 12116 | 44.4% | Baixo |
-| Dever de Informação | 4654 | 46.7% | Baixo |
-| Causas Supervenientes à Sentença | 25074 | 47.7% | Baixo |
-| Inclusão Indevida em Cadastro de Inadimplentes | 45705 | 48.8% | Baixo |
-| Direito de Imagem | 99426 | 49.7% | Baixo |
-| Tarifas | 39396 | 50.4% | Baixo |
-| Rescisão do contrato e devolução do dinheiro | 14525 | 50.8% | Baixo |
-| Auxílio por Incapacidade Temporária | 6331 | 51.6% | Baixo |
-| Indenização por Dano Material | 70813 | 54.5% | Baixo |
-| Defeito, nulidade ou anulação | 16474 | 55.3% | Baixo |
-| Contratos Bancários | 31354 | 55.9% | Baixo |
-| Salário-Maternidade (Art. 71/73) | 5063 | 56.6% | Baixo |
-| Sucumbenciais  | 6208 | 62.9% | Baixo |
-| Efeito Suspensivo / Impugnação / Embargos à Execução | 4388 | 64.3% | Baixo |
-| Empréstimo consignado | 147109 | 72.8% | Baixo |
-| ICMS / Incidência Sobre o Ativo Fixo | 663 | 80.4% | Baixo |
 
-Gerado por `jurimetria_datajud.py` em 06/08/2026.
+
+| Codigo | Pedido (assunto TPU) | Decididos | Improcedencia | risco |
+|---:|---|---:|---:|---|
+| 7925 | Registro de Óbito após prazo legal | 24268 | 1.2% | Alto |
+| 12245 | Nomeação | 14012 | 2.6% | Alto |
+| 7687 | Inventário e Partilha | 5340 | 5.6% | Alto |
+| 9582 | Alienação Fiduciária | 12536 | 10.0% | Alto |
+| 10677 | Busca e Apreensão | 2386 | 10.6% | Alto |
+| 4972 | Duplicata | 1162 | 10.8% | Alto |
+| 3633 | Crimes do Sistema Nacional de Armas | 7018 | 14.2% | Alto |
+| 5566 | Roubo Majorado | 11158 | 16.3% | Alto |
+| 3417 | Furto Qualificado  | 3773 | 17.8% | Alto |
+| 11783 | Citação | 607 | 19.4% | Alto |
+| 9587 | Compra e Venda | 3966 | 19.8% | Alto |
+| 7697 | Correção Monetária | 3577 | 20.2% | Alto |
+| 9160 | Levantamento de Valor | 12475 | 21.1% | Alto |
+| 3632 | Crimes de Trânsito | 2284 | 21.1% | Alto |
+| 7621 | Seguro | 23741 | 21.3% | Alto |
+| 3416 | Furto  | 3311 | 21.4% | Alto |
+| 3435 | Receptação | 2870 | 22.0% | Alto |
+| 7703 | Pagamento | 3656 | 23.2% | Alto |
+| 9596 | Prestação de Serviços | 10311 | 24.1% | Medio |
+| 3386 | Leve | 1944 | 26.2% | Medio |
+| 3372 | Homicídio Qualificado | 3749 | 26.6% | Medio |
+| 4355 | Prisão Preventiva | 635 | 26.9% | Medio |
+| 3608 | Tráfico de Drogas e Condutas Afins | 9242 | 27.0% | Medio |
+| 3370 | Homicídio Simples | 2801 | 30.0% | Medio |
+| 10893 | Base de Cálculo | 6794 | 31.7% | Medio |
+| 10671 | Obrigação de Fazer / Não Fazer | 32164 | 32.3% | Medio |
+| 12042 | Análise de Crédito | 4079 | 35.9% | Medio |
+| 9196 | Liminar  | 24288 | 36.8% | Medio |
+| 3402 | Ameaça  | 6602 | 36.8% | Medio |
+| 10441 | Acidente de Trânsito | 15302 | 36.8% | Medio |
+| 4960 | Cédula de Crédito Bancário | 1701 | 37.0% | Medio |
+| 7698 | Perdas e Danos | 13083 | 38.0% | Medio |
+| 14925 | Repetição do Indébito | 12054 | 40.2% | Medio |
+| 12194 | Contra a Mulher | 9495 | 40.9% | Medio |
+| 10949 | Violência Doméstica Contra a Mulher | 4309 | 41.0% | Medio |
+| 6177 | Concessão | 8618 | 41.9% | Medio |
+| 11811 | Práticas Abusivas | 30370 | 42.2% | Medio |
+| 7769 | Abatimento proporcional do preço  | 16797 | 43.7% | Medio |
+| 7781 | Protesto Indevido de Título | 7602 | 43.8% | Baixo |
+| 7760 | Fornecimento de Energia Elétrica | 15963 | 44.1% | Baixo |
+| 7772 | Cartão de Crédito | 16220 | 44.8% | Baixo |
+| 11810 | Dever de Informação | 6176 | 46.6% | Baixo |
+| 9517 | Causas Supervenientes à Sentença | 33484 | 47.5% | Baixo |
+| 6226 | Inclusão Indevida em Cadastro de Inadimplentes | 60781 | 48.7% | Baixo |
+| 10437 | Direito de Imagem | 132885 | 49.7% | Baixo |
+| 11807 | Tarifas | 52483 | 50.5% | Baixo |
+| 7768 | Rescisão do contrato e devolução do dinheiro | 19344 | 50.8% | Baixo |
+| 6101 | Auxílio por Incapacidade Temporária | 8422 | 51.6% | Baixo |
+| 7780 | Indenização por Dano Material | 94776 | 54.4% | Baixo |
+| 4703 | Defeito, nulidade ou anulação | 22033 | 55.1% | Baixo |
+| 9607 | Contratos Bancários | 41908 | 56.1% | Baixo |
+| 6103 | Salário-Maternidade (Art. 71/73) | 6737 | 56.3% | Baixo |
+| 13537 | Sucumbenciais  | 8193 | 63.2% | Baixo |
+| 9518 | Efeito Suspensivo / Impugnação / Embargos à Execução | 5798 | 64.1% | Baixo |
+| 11806 | Empréstimo consignado | 196395 | 72.8% | Baixo |
+| 10531 | ICMS / Incidência Sobre o Ativo Fixo | 882 | 81.1% | Baixo |
+
+Gerado por `jurimetria_datajud.py` em 13/08/2026.

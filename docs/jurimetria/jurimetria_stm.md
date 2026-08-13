@@ -8,16 +8,18 @@ So vale para pedido CONTENCIOSO. Materia sem lide (inventario, divorcio consensu
 
 `risco`: recurso negado < 73.2% = Alto | ate' 79.2% = Medio | acima = Baixo (tercis desta tabela).
 
-| Pedido (assunto TPU) | Decididos | Recurso negado | risco |
-|---|---:|---:|---|
-| Deserção | 523 | 67.1% | Alto |
-| Depoimento | 819 | 72.4% | Alto |
-| Estelionato | 699 | 72.7% | Alto |
-| Penas do Código Penal Militar | 893 | 73.2% | Medio |
-| Competência da Justiça Militar da União | 795 | 73.3% | Medio |
-| Tráfico, posse ou uso de entorpecente ou substância de efeito similar | 1012 | 79.2% | Medio |
-| Fato Atípico | 1493 | 79.2% | Medio |
-| Nulidade | 768 | 79.4% | Baixo |
-| Princípio da Insignificância | 792 | 83.2% | Baixo |
 
-Gerado por `jurimetria_datajud.py` em 06/08/2026.
+
+| Codigo | Pedido (assunto TPU) | Decididos | Recurso negado | risco |
+|---:|---|---:|---:|---|
+| 11127 | Deserção | 523 | 67.1% | Alto |
+| 10940 | Depoimento | 819 | 72.4% | Alto |
+| 11167 | Estelionato | 699 | 72.7% | Alto |
+| 10641 | Penas do Código Penal Militar | 893 | 73.2% | Medio |
+| 11055 | Competência da Justiça Militar da União | 795 | 73.3% | Medio |
+| 11207 | Tráfico, posse ou uso de entorpecente ou substância de efeito similar | 1012 | 79.2% | Medio |
+| 10952 | Fato Atípico | 1493 | 79.2% | Medio |
+| 8919 | Nulidade | 768 | 79.4% | Baixo |
+| 11090 | Princípio da Insignificância | 792 | 83.2% | Baixo |
+
+Gerado por `jurimetria_datajud.py` em 13/08/2026.
