@@ -200,6 +200,11 @@ def taxas(alias: str, quantos: int = 60) -> list[dict]:
         linhas.append({"codigo": cods[0].get("key"), "assunto": b["key"],
                        "decididos": decididos, "taxa": round(pct, 1)})
     linhas.sort(key=lambda x: x["taxa"])
+    # Tribunal pequeno (ou indice recem-repovoado) pode nao ter NENHUM assunto
+    # com amostra: `cortes` de lista vazia estourava IndexError, e quem chamava
+    # via CLI so' via "list index out of range" em vez do motivo.
+    if not linhas:
+        return []
     ca, cb = cortes([l["taxa"] for l in linhas])
     for l in linhas:
         l["risco"] = risco(l["taxa"], ca, cb)
@@ -290,6 +295,17 @@ def markdown(alias: str) -> str:
 
 def demo():
     assert cortes([10, 20, 30, 40, 50, 60]) == (30, 50)
+    # Nenhum assunto com amostra: `taxas` devolve vazio em vez de estourar em
+    # `cortes` (quem reporta o motivo e' o markdown()). trf5 e trt18 caiam
+    # aqui com "list index out of range" em 13/08/2026.
+    real = globals()["consultar"]
+    globals()["consultar"] = lambda *a, **k: {"aggregations": {"assunto": {
+        "buckets": [{"key": "Assunto raro", "decididos": {"doc_count": 3},
+                     "contra": {"doc_count": 1}, "codigo": {"buckets": []}}]}}}
+    try:
+        assert taxas("trt3") == []
+    finally:
+        globals()["consultar"] = real
     ca, cb = cortes([16.8, 21.5, 24.3, 28.0, 37.3, 40.6])  # amostra do TRT3
     assert risco(16.8, ca, cb) == "Alto"    # horas in itinere
     assert risco(24.3, ca, cb) == "Medio"   # responsabilidade subsidiaria

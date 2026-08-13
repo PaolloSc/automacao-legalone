@@ -1,37 +1,37 @@
 # Jurimetria TRT11 - 1o grau (fonte: DataJud/CNJ)
 
-Media do tribunal: **17.7%** de improcedencia entre os processos com sentenca de merito.
+Media do tribunal: **27.9%** de improcedencia entre os processos com sentenca de merito.
 
 Como ler: a taxa e' do PROCESSO que contem aquele pedido, nao do pedido isolado. Serve para comparar com a media -- pedido rejeitado MENOS que a media e' o que mais ameaca quem se defende.
 
 So vale para pedido CONTENCIOSO. Materia sem lide (inventario, divorcio consensual, jurisdicao voluntaria) quase nunca da' improcedente, entao aparece como risco Alto sem querer dizer nada. Ignore a linha nesses casos.
 
-`risco`: improcedencia < 11.6% = Alto | ate' 16.1% = Medio | acima = Baixo (tercis desta tabela).
+`risco`: improcedencia < 15.3% = Alto | ate' 28.3% = Medio | acima = Baixo (tercis desta tabela).
 
-| Pedido (assunto TPU) | Decididos | Improcedencia | risco |
-|---|---:|---:|---|
-| Rescisão Indireta | 3355 | 7.7% | Alto |
-| Salário Vencido/Retido | 560 | 7.7% | Alto |
-| Anotação/Baixa/Retificação | 906 | 10.4% | Alto |
-| Verbas Rescisórias | 4445 | 10.6% | Alto |
-| Saldo de Salário | 1168 | 10.7% | Alto |
-| Férias Proporcionais | 1430 | 10.9% | Alto |
-| Multa do Artigo  477 da CLT | 2457 | 11.6% | Medio |
-| Seguro Desemprego | 701 | 11.6% | Medio |
-| FGTS | 2189 | 11.7% | Medio |
-| Multa do Artigo 467 da CLT  | 1811 | 11.9% | Medio |
-| Décimo Terceiro Salário Proporcional | 1508 | 11.9% | Medio |
-| Multa de 40% do FGTS | 2513 | 12.0% | Medio |
-| Aviso Prévio | 2095 | 12.0% | Medio |
-| Reconhecimento de Relação de Emprego | 1779 | 15.7% | Medio |
-| Férias | 528 | 15.9% | Medio |
-| Adicional de Insalubridade | 1854 | 16.1% | Medio |
-| Indenização por Dano Moral | 2776 | 16.2% | Baixo |
-| Honorários na Justiça do Trabalho  | 662 | 19.3% | Baixo |
-| Intervalo Intrajornada | 1081 | 22.6% | Baixo |
-| Adicional de Horas Extras | 917 | 23.3% | Baixo |
-| Horas Extras | 723 | 25.7% | Baixo |
-| Horas Extras  | 1388 | 26.6% | Baixo |
-| Doença Ocupacional | 683 | 27.1% | Baixo |
 
-Gerado por `jurimetria_datajud.py` em 06/08/2026.
+
+| Codigo | Pedido (assunto TPU) | Decididos | Improcedencia | risco |
+|---:|---|---:|---:|---|
+| 14001 | Saldo de Salário | 853 | 10.9% | Alto |
+| 13745 | Anotação/Baixa/Retificação | 863 | 11.7% | Alto |
+| 13968 | Rescisão Indireta | 1660 | 12.7% | Alto |
+| 14000 | Multa do Artigo  477 da CLT | 1872 | 14.5% | Alto |
+| 13994 | Aviso Prévio | 2225 | 15.2% | Alto |
+| 13995 | Décimo Terceiro Salário Proporcional | 1239 | 15.3% | Medio |
+| 13996 | Férias Proporcionais | 1220 | 15.3% | Medio |
+| 13999 | Multa do Artigo 467 da CLT  | 1409 | 15.3% | Medio |
+| 13970 | Verbas Rescisórias | 2691 | 16.7% | Medio |
+| 13998 | Multa de 40% do FGTS | 2020 | 17.3% | Medio |
+| 13719 | FGTS | 1432 | 18.6% | Medio |
+| 13875 | Adicional de Insalubridade | 1310 | 25.5% | Medio |
+| 13799 | Adicional de Hora Extra | 527 | 26.6% | Medio |
+| 14010 | Indenização por Dano Moral | 2037 | 27.3% | Medio |
+| 13184 | Honorários na Justiça do Trabalho  | 512 | 28.3% | Medio |
+| 13769 | Horas Extras | 813 | 28.5% | Baixo |
+| 13772 | Intervalo Intrajornada | 830 | 29.2% | Baixo |
+| 13787 | Adicional de Horas Extras | 1148 | 30.2% | Baixo |
+| 13722 | Reconhecimento de Relação de Emprego | 847 | 31.6% | Baixo |
+| 14016 | Acidente de Trabalho | 551 | 32.5% | Baixo |
+| 14024 | Doença Ocupacional | 832 | 42.5% | Baixo |
+
+Gerado por `jurimetria_datajud.py` em 13/08/2026.
