@@ -197,7 +197,7 @@ class OutlookMonitorGraph:
             f"?$filter={filtro_str}"
             f"&$top=50"
             f"&$orderby=receivedDateTime desc"
-            f"&$select=id,subject,from,receivedDateTime,body"
+            f"&$select=id,internetMessageId,subject,from,receivedDateTime,body"
         )
 
         try:
@@ -212,9 +212,17 @@ class OutlookMonitorGraph:
 
         for msg in mensagens:
             msg_id = msg["id"]
+            # O Power Automate manda do proprio usuario para o proprio usuario:
+            # a mesma mensagem existe em Itens Enviados E na Caixa de Entrada, e
+            # /messages varre todas as pastas. Cada copia tem `id` proprio — so'
+            # o internetMessageId e' igual. Dedupar por `id` fazia o bot
+            # processar a peticao duas vezes (e mandar dois e-mails de erro).
+            chave = msg.get("internetMessageId") or msg_id
 
-            # Já processado?
-            if msg_id in self.emails_processados:
+            # Já processado? `msg_id` tambem conta: o estado gravado antes de
+            # 13/08/2026 guardava id de mensagem, e sem essa segunda checagem a
+            # primeira rodada apos o deploy reprocessaria a janela inteira.
+            if chave in self.emails_processados or msg_id in self.emails_processados:
                 continue
 
             sender_addr = (
@@ -243,7 +251,7 @@ class OutlookMonitorGraph:
                     "dados_diretos": json_data,
                 }
                 emails_encontrados.append(dados)
-                self.emails_processados.add(msg_id)
+                self.emails_processados.add(chave)
                 logger.info(f"[COPILOT] Email do Copilot detectado: CNJ={json_data.get('cnj', '?')}")
 
             else:
@@ -263,7 +271,7 @@ class OutlookMonitorGraph:
 
                 if dados["forms_link"]:
                     emails_encontrados.append(dados)
-                    self.emails_processados.add(msg_id)
+                    self.emails_processados.add(chave)
 
             # Marca como lido
             try:
