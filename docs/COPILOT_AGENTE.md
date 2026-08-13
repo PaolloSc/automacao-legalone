@@ -266,12 +266,21 @@ Dois limites que precisam estar claros para quem lê o número:
 2. Só vale para pedido **contencioso**. Inventário e divórcio consensual quase
    nunca dão improcedente e apareceriam como "risco Alto" sem significar nada.
 
-> **Alterado em 13/08/2026 (publicado).** Duas regras mudaram no prompt vivo:
-> `risco` agora é sempre "NAO LOCALIZADO" — quem resolve é o bot, pelo código
-> TPU do assunto (ver seção de Jurimetria); e `cnj` virou obrigatório: sem o
-> número (petição inicial ainda não protocolada), o agente PERGUNTA ao
-> advogado e não chama o fluxo. O bot não cadastra sem CNJ, então enviar sem
-> ele só gera e-mail de erro.
+> **Alterado em 13/08/2026 (publicado 19:43).** No prompt vivo:
+> - `cnj` é obrigatório: sem o número (petição inicial ainda não protocolada),
+>   o agente PERGUNTA ao advogado e não chama o fluxo. O bot não cadastra sem
+>   CNJ, então enviar sem ele só gera e-mail de erro.
+> - `risco`: o agente calcula pela tabela de jurimetria (Conhecimento) e
+>   **mostra no resumo** — o escritório quer o risco visível na conversa. Quem
+>   grava no LegalOne é o bot, pelo **código TPU** do assunto: o agente casa o
+>   assunto por texto e erra a linha, então a tabela por código corrige.
+>   Divergência sai no log (`risco do agente 'Alto' -> 'Medio'`).
+> - `natureza` aceita só **Cível** ou **Trabalhista**.
+> - Trabalhista: `probabilidade` = Perda e `grau_probabilidade` = Possível,
+>   sempre.
+>
+> O prompt está em 7.997/8.000 caracteres — qualquer regra nova exige aparar
+> outra antes.
 
 ## Formato de Saída
 Liste campos extraídos com valores. Se não encontrou, "NAO LOCALIZADO"
