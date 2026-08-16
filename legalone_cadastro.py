@@ -1,4 +1,4 @@
-﻿"""
+"""
 Módulo para cadastro automático de processos no LegalOne
 Versão Otimizada: Mantém navegador e sessão ativos
 """
@@ -17,7 +17,7 @@ import unicodedata
 import equipe
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urljoin
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
 import logging
@@ -7504,16 +7504,32 @@ class LegalOneCadastro:
         primeiro = candidatos[0] if candidatos else ''
         palavras = primeiro.split()
         tentativas = []
+        # As palavras que IDENTIFICAM vem primeiro: filtrar por 'Tribunal de
+        # Justica' devolve a familia inteira em ordem alfabetica e a de Sao
+        # Paulo nem aparece nas 10 primeiras (14/08/2026).
+        identidade = [p for p in palavras
+                      if _normalizar_pedido(p) not in self._PALAVRAS_GENERICAS]
+        if identidade and identidade != palavras[:len(identidade)]:
+            tentativas.append(' '.join(identidade[:3]))
         if palavras:
             tentativas.append(' '.join(palavras[:3]))
             tentativas.append(' '.join(palavras[:2]))
             tentativas.append(palavras[0][:4])
         tentativas.append(None)  # ultimo recurso: lista inteira
+        # Campo que existe no DOM mas nao esta' na tela (a de novo recurso nao
+        # tem Natureza) fazia cada fill/type esperar os 90s de actionability —
+        # 6 minutos por lookup fantasma.
+        try:
+            if not campo.is_visible():
+                return []
+        except Exception:
+            return []
+
         for prefixo in tentativas:
             try:
-                campo.fill('')
+                campo.fill('', timeout=5000)
                 if prefixo:
-                    campo.type(prefixo, delay=40)
+                    campo.type(prefixo, delay=40, timeout=5000)
                     # A busca so dispara no Enter; sem ele a lista vinha sem
                     # filtro e o 'melhor da lista' era qualquer coisa.
                     campo.press('Enter')
@@ -7529,6 +7545,32 @@ class LegalOneCadastro:
                     return opcoes
                 time.sleep(0.25)
         return []
+
+    # Palavras que aparecem em quase toda opcao de catalogo e por isso nao
+    # identificam nada: 'Tribunal de Justica do Estado de Sao Paulo' e o da
+    # Paraiba tem 0.85 de semelhanca — o que separa os dois e' 'sao paulo'.
+    _PALAVRAS_GENERICAS = frozenset("""
+        de do da dos das e a o as os no na nos nas em por para com sem
+        tribunal justica estado juizo vara turma camara secao regiao grau
+        instancia foro comarca federal estadual regional superior civel
+        """.split())
+
+    def _tokens_identidade(self, texto: str) -> set[str]:
+        palavras = re.findall(r'\w+', _normalizar_pedido(texto or ''))
+        return {p for p in palavras if p not in self._PALAVRAS_GENERICAS}
+
+    def _compartilha_identidade(self, candidatos: list[str], texto_opcao: str) -> bool:
+        """Veta opcao que nao tem NENHUMA palavra identificadora em comum.
+
+        Sem isso a semelhanca sozinha escolhia outro tribunal (14/08/2026:
+        'TJ da Paraiba' para 'TJ de Sao Paulo', 0.85).
+        """
+        da_opcao = self._tokens_identidade(texto_opcao)
+        for candidato in candidatos:
+            tokens = self._tokens_identidade(candidato)
+            if not tokens or not da_opcao or tokens & da_opcao:
+                return True
+        return False
 
     def _preencher_lookup_por_id(self, id_text: str, id_hidden: str, valor: str,
                                  busca: str | None = None) -> bool:
@@ -7552,8 +7594,18 @@ class LegalOneCadastro:
                 if c.strip()
             ] or [str(valor)]
             candidatos = [self._expandir_abreviacoes(c) for c in candidatos]
-            campo.scroll_into_view_if_needed()
-            campo.click()
+            # timeout curto: campo fora de tela/painel fechado gastava 90s por
+            # lookup (5 campos = 7min na tela de novo recurso, 14/08/2026)
+            try:
+                campo.scroll_into_view_if_needed(timeout=5000)
+                campo.click(timeout=5000)
+            except Exception:
+                # ultimo recurso: foca por JS, que ignora visibilidade
+                self.page.evaluate(
+                    "(id) => { const el = document.getElementById(id);"
+                    " if (el) { el.scrollIntoView({block:'center'}); el.focus(); } }",
+                    id_text,
+                )
             opcoes = self._abrir_lista_lookup(campo, candidatos)
             if not opcoes:
                 logger.warning(
@@ -7563,8 +7615,12 @@ class LegalOneCadastro:
 
             alvo, texto_alvo, score = None, '', -1.0
             for li, texto in opcoes:
-                s = max(self._calcular_similaridade(c, texto) for c in candidatos)
-                if s > score:
+                # a opcao pode vir em colunas ('SP\tSão Paulo\tBrasil'): comparar
+                # so' com a linha inteira derrubava 'SP' para 0.19
+                partes = [texto] + [p for p in re.split(r'\t|\s{2,}', texto) if p.strip()]
+                s = max(self._calcular_similaridade(c, p)
+                        for c in candidatos for p in partes)
+                if s > score and self._compartilha_identidade(candidatos, texto):
                     alvo, texto_alvo, score = li, texto, s
             if alvo is None:
                 return False
@@ -7584,7 +7640,12 @@ class LegalOneCadastro:
 
             alvo.click()
             time.sleep(0.4)
-            if id_hidden and not self._lookup_gravou(id_hidden):
+            # O hidden as vezes JA nasce preenchido (o vinculo vem apontado para
+            # a pasta de origem), entao 'tem Id' nao prova que a escolha entrou.
+            # Prova mesmo e' o texto visivel: se sobrou a LINHA da grade (com
+            # tabulacao), foi digitacao, nao selecao.
+            if id_hidden and (not self._lookup_gravou(id_hidden)
+                              or '\t' in self._texto_do_campo(id_text)):
                 # Bento/Kendo so comita por teclado: refaz a escolha andando
                 # ate o item na lista que continua aberta.
                 indice = [t for _, t in opcoes].index(texto_alvo)
@@ -7595,8 +7656,11 @@ class LegalOneCadastro:
                     time.sleep(0.4)
                 except Exception:
                     pass
-                if not self._lookup_gravou(id_hidden):
-                    logger.warning(f"   ⚠ {id_text}: selecao nao gravou o Id")
+                if (not self._lookup_gravou(id_hidden)
+                        or '\t' in self._texto_do_campo(id_text)):
+                    logger.warning(
+                        f"   ⚠ {id_text}: selecao nao commitou "
+                        f"(texto={self._texto_do_campo(id_text)[:60]!r})")
                     return False
             logger.info(
                 f"   ✓ {id_text}: {texto_alvo} (Forms: {valor}, "
@@ -7636,6 +7700,13 @@ class LegalOneCadastro:
         except Exception as e:
             logger.warning(f"   ⚠ nao consegui limpar {id_text}: {e}")
 
+    def _texto_do_campo(self, id_campo: str) -> str:
+        try:
+            return str(self.page.evaluate(
+                "(id) => (document.getElementById(id) || {}).value || ''", id_campo) or '')
+        except Exception:
+            return ''
+
     def _lookup_gravou(self, id_hidden: str) -> bool:
         try:
             hid = self.page.evaluate(
@@ -7644,6 +7715,116 @@ class LegalOneCadastro:
         except Exception:
             return False
         return bool(str(hid).strip())
+
+    def _clicar_linha_arvore(self, nivel: int, candidatos: list[str], *, e_expander: bool) -> bool:
+        """Acha (com polling) e clica de verdade (Playwright, nao JS) a linha do
+        nivel pedido de um lookupTree.
+
+        Duas causas raiz confirmadas ao vivo (14/08/2026) — sem elas o clique
+        nao commitava nada:
+        1. As linhas NAO ficam dentro do '.lookup' do campo (`closest('.lookup')`
+           nao acha nada) — o popover renderiza fora dessa subarvore do DOM.
+           A busca tem que ser pelo documento inteiro, igual a lista plana
+           (`_opcoes_lookup_visiveis`) ja faz.
+        2. `elemento.click()` via JS (page.evaluate) nao dispara o handler do
+           widget. Precisa ser clique REAL (CDP) via Locator do Playwright.
+        """
+        limite = time.time() + 4
+        while time.time() < limite:
+            linhas = self.page.locator(f'tr[data-val-level="{nivel}"]:visible')
+            n = linhas.count()
+            if n:
+                melhor_idx, melhor_score = None, -1.0
+                for i in range(n):
+                    texto = (linhas.nth(i).inner_text() or '').strip()
+                    if not texto or not self._compartilha_identidade(candidatos, texto):
+                        continue
+                    s = max(self._calcular_similaridade(c, texto) for c in candidatos)
+                    if s > melhor_score:
+                        melhor_idx, melhor_score = i, s
+                if melhor_idx is not None and melhor_score >= self.SEMELHANCA_MINIMA_LOOKUP:
+                    linha = linhas.nth(melhor_idx)
+                    alvo = linha.locator('.expander') if e_expander else linha.locator('td').first
+                    if e_expander and alvo.count() == 0:
+                        alvo = linha
+                    try:
+                        alvo.first.click(timeout=3000)
+                        return True
+                    except Exception as e:
+                        logger.warning(f"   ⚠ clique na linha (nivel {nivel}) falhou: {e}")
+                        return False
+            time.sleep(0.25)
+        return False
+
+    def _selecionar_em_lookup_tree(self, id_text: str, valor: str) -> bool:
+        """Seleciona um item num lookupTree (ex.: Área/Centro de custo) descendo
+        nivel por nivel — o widget e' uma arvore, nao uma lista plana, e o resto
+        do arquivo so' sabe lidar com listas planas (_preencher_lookup_por_id).
+
+        Mecanismo confirmado ao vivo e validado ponta a ponta (14/08/2026):
+        '.lookup-show' abre a arvore inteira sem digitar nada; clicar no
+        '.expander' de uma linha desce um nivel; a linha final (clique na
+        propria linha, nao no expander) e' o que grava a selecao.
+        """
+        segmentos = [s.strip() for s in str(valor or '').split('/') if s.strip()]
+        if not self.page or not id_text or not segmentos:
+            return False
+        id_hidden = re.sub(r'Text$', 'Id', id_text)
+        hidden_antes = self._texto_do_campo(id_hidden)
+
+        try:
+            btn = self.page.locator(f'#{id_text}').locator(
+                'xpath=ancestor::div[contains(@class,"lookup")][1]'
+            ).locator('.lookup-show').first
+            btn.click(timeout=5000)
+        except Exception as e:
+            logger.warning(f"   ⚠ {id_text} (arvore): '.lookup-show' nao clicou — {e}")
+            return False
+        time.sleep(1.0)
+
+        for nivel, segmento in enumerate(segmentos):
+            ultimo = nivel == len(segmentos) - 1
+            if not self._clicar_linha_arvore(nivel, [segmento], e_expander=not ultimo):
+                logger.warning(
+                    f"   ⚠ {id_text}: nao achei/cliquei {segmento!r} no nivel {nivel} da arvore")
+                return False
+            time.sleep(0.3 if ultimo else 0.8)
+
+        time.sleep(0.4)
+        hidden_depois = self._texto_do_campo(id_hidden)
+        texto_depois = self._texto_do_campo(id_text)
+        gravou = (
+            hidden_depois and hidden_depois != hidden_antes
+            and self._normalizar_texto_busca(segmentos[-1]) in self._normalizar_texto_busca(texto_depois)
+        )
+        # Escape so' ESCONDE a arvore (offsetHeight vira 0), NAO tira do DOM —
+        # confirmado ao vivo (14/08/2026). O proximo lookup (Pedidos, p.ex.)
+        # usa selectors que nao filtram por visibilidade em alguns padroes
+        # (`.lookup-dropdown .treeTable tbody tr.initialized`) e acha essas
+        # linhas escondidas mesmo assim, contaminando a busca com opcoes tipo
+        # 'Área operacional' em vez do catalogo certo. Preciso REMOVER as
+        # linhas do DOM, nao so' esconder.
+        try:
+            self.page.keyboard.press('Escape')
+        except Exception:
+            pass
+        try:
+            self.page.evaluate(
+                """() => document.querySelectorAll(
+                    '.lookup-dropdown tr[data-val-level], .lookup-dropdown .treeTable tr.initialized'
+                ).forEach(tr => { if (tr.offsetHeight === 0) tr.remove(); })"""
+            )
+        except Exception:
+            pass
+
+        if not gravou:
+            logger.warning(
+                f"   ⚠ {id_text}: selecao na arvore nao commitou "
+                f"(hidden antes={hidden_antes!r} depois={hidden_depois!r}, texto={texto_depois[:60]!r})"
+            )
+            return False
+        logger.info(f"   ✓ {id_text}: {texto_depois} (Forms: {valor})")
+        return True
 
     def _preencher_data_por_id(self, id_campo: str, valor) -> bool:
         data = self._normalizar_data_legalone(valor)
@@ -7942,19 +8123,23 @@ class LegalOneCadastro:
     # Tudo so-se-vazio: a tela chega preenchida pela captura do tribunal e o
     # Forms e' resposta de memoria — sobrescrever apagaria o dado melhor.
     # ------------------------------------------------------------------
+    # ORDEM IMPORTA: na tela de novo recurso os lookups nascem readonly ate o
+    # pai ser escolhido — Instancia exige Justica; Classe/Assunto exigem
+    # Instancia; Comarca/foro exige UF + Justica. Preencher fora de ordem
+    # deixava 5 campos em branco esperando 90s cada (14/08/2026).
     _FICHA_LOOKUPS = (
-        ('TipoAcao', ('acao',)),
-        ('Natureza', ('natureza',)),
-        ('Orgao', ('orgao',)),
-        ('Procedimento', ('procedimento',)),
-        ('Instancia', ('instancia',)),
         # 'Justica (CNJ)' (#JusticaId na varredura de 13/08/2026): chega vazio
         # do tribunal e sai do segmento do proprio CNJ.
         ('Justica', ('justica',)),
         ('UF', ('uf',)),
+        ('Instancia', ('instancia',)),
         ('Cidade', ('cidade',)),
         # Label da tela e' 'Comarca/foro'; o Forms pergunta 'Cidade/Comarca'.
         ('Foro', ('comarca', 'cidade_comarca')),
+        ('TipoAcao', ('acao',)),
+        ('Natureza', ('natureza',)),
+        ('Orgao', ('orgao',)),
+        ('Procedimento', ('procedimento',)),
         ('Vara', ('nome_vara_turma',)),
         ('NegociacaoContratoHonorario', ('contrato_honorarios',)),
         # Envolvidos principais. O texto visivel chega vazio no HTML (o JS
@@ -8010,7 +8195,9 @@ class LegalOneCadastro:
         ('Provisao', ('valor_adicional_provisao',)),
     )
 
-    _RE_ID_PERSONALIZADO = re.compile(r'_ProcessoEntitySchema_p\d+_o\d+$')
+    # \d* (nao \d+) porque na tela de CRIACAO (entidade ainda sem id) o
+    # segmento do processo vem vazio: '..._o_Value' em vez de '..._o7444_Value'.
+    _RE_ID_PERSONALIZADO = re.compile(r'_ProcessoEntitySchema_p\d+_o\d*$')
 
     def _estado_campo(self, id_campo: str) -> str:
         """'ausente' | 'vazio' | 'preenchido'.
@@ -8590,6 +8777,673 @@ class LegalOneCadastro:
         except Exception as e:
             logger.error(f"[RECURSO] Erro no fluxo: {e}")
             self._registrar_diagnostico_falha("Fluxo Recurso", str(e))
+            return False
+
+    def _pesquisar_processos(self, termo: str) -> None:
+        self.page.goto(
+            'https://carvalhofurtadoadv.novajus.com.br/processos/processos/search',
+            wait_until='domcontentloaded', timeout=20000)
+        campo = self.page.wait_for_selector(
+            '#Search, input[name="Search"], input[placeholder*="Pesquisar em processos"]',
+            state='visible', timeout=15000)
+        campo.click()
+        campo.fill('')
+        campo.type(termo, delay=40)
+        self.page.click(
+            '#search-box-input-submit, input[value="Pesquisar"], input.button[type="submit"]')
+        self.page.wait_for_load_state('domcontentloaded')
+        time.sleep(2.0)
+
+    def _link_detalhes_da_busca(self, cnj_origem: str) -> str | None:
+        """Link de detalhes da pasta: a linha que casa o CNJ, ou a única achada."""
+        return self.page.evaluate(
+            """
+            (alvo) => {
+                const so = t => (t || '').replace(/\\D/g, '');
+                const links = Array.from(document.querySelectorAll(
+                    'a[href*="/processos/processos/details/"]')).filter(a => a.offsetHeight > 0);
+                if (!links.length) return null;
+                const naLinha = links.find(a => {
+                    const linha = a.closest('tr') || a.parentElement;
+                    return alvo && so(linha && linha.innerText).includes(alvo);
+                });
+                if (naLinha) return naLinha.getAttribute('href');
+                return links.length === 1 ? links[0].getAttribute('href') : null;
+            }
+            """,
+            re.sub(r'\D', '', cnj_origem or ''),
+        )
+
+    # Obrigatorios do recurso que o Forms nao pergunta e a heranca do vinculo
+    # nao traz. Valor certo e' o que ja' esta' na pasta de origem — inventar
+    # 'Sim'/'Nao' aqui seria chutar politica do escritorio.
+    _HERDAR_DA_ORIGEM = ('DatacloudConfigurado', 'VoceCadastrouOCentroDeCusto', 'CentroDeCusto')
+
+    def _ler_obrigatorios_da_origem(self, id_pasta: str) -> dict:
+        """Le da tela de alteracao da pasta de origem os campos exigidos no recurso."""
+        valores: dict[str, str] = {}
+        try:
+            self.page.goto(
+                f'https://carvalhofurtadoadv.novajus.com.br/processos/processos/edit/{id_pasta}',
+                wait_until='domcontentloaded', timeout=30000)
+            time.sleep(2.5)
+            valores = self.page.evaluate(
+                """
+                (prefixos) => {
+                    const out = {};
+                    for (const p of prefixos) {
+                        const el = document.querySelector(
+                            '[id^="' + p + '_ProcessoEntitySchema_"][id$="_Value"]');
+                        if (el && el.value) out[p] = el.value;
+                    }
+                    const area = document.querySelector('[id^="Areas_"][id$="__AreaText"]');
+                    if (area && area.value) out['Area'] = area.value;
+                    return out;
+                }
+                """,
+                list(self._HERDAR_DA_ORIGEM),
+            ) or {}
+        except Exception as e:
+            logger.warning(f"   ⚠ nao consegui ler obrigatorios da origem: {e}")
+        if valores:
+            logger.info(f"   ✓ Da pasta de origem: {valores}")
+        return valores
+
+    def _aplicar_obrigatorios_herdados(self, valores: dict) -> None:
+        """Escreve na tela do recurso o que veio da pasta de origem."""
+        for prefixo in self._HERDAR_DA_ORIGEM:
+            valor = valores.get(prefixo)
+            base = self._base_personalizado(prefixo) if valor else ''
+            if base and self._estado_campo(f'{base}_Id') == 'vazio':
+                self._preencher_lookup_por_id(f'{base}_Value', f'{base}_Id', valor)
+
+        area = valores.get('Area')
+        if not area:
+            return
+        ids = self.page.evaluate(
+            """() => {
+                const el = document.querySelector('[id^="Areas_"][id$="__AreaText"]');
+                return el ? [el.id, el.id.replace(/Text$/, 'Id')] : null;
+            }"""
+        )
+        if not ids:
+            return
+        # 'Area' e' uma arvore (lookupTree), nao lista plana: NUNCA fica
+        # realmente 'vazio' — vem com um default raso (so' a empresa, 1 nivel)
+        # que precisa ser aprofundado ate o valor de 3 niveis da origem. O
+        # gate certo e' comparar texto, nao _estado_campo.
+        texto_atual = self._texto_do_campo(ids[0])
+        if self._normalizar_texto_busca(texto_atual) == self._normalizar_texto_busca(area):
+            logger.debug(f"   · Area ja correta: {texto_atual}")
+            return
+        try:
+            if not self._selecionar_em_lookup_tree(ids[0], area):
+                logger.warning(
+                    f"   ⚠ Area: nao consegui selecionar {area!r} na arvore "
+                    f"(ficou {texto_atual!r})")
+        except Exception as e:
+            logger.warning(f"   ⚠ Area: falha inesperada na arvore: {e}")
+
+    def _abrir_novo_recurso_da_pasta(self, cnj_origem: str, cliente: str = '') -> bool:
+        """Pesquisa a pasta de origem e abre o formulário 'Novo recurso' dela.
+
+        O link da barra de ações ('/processos/recursos/create?MatterLinkId=..&
+        MatterId=..') é lido do DOM da tela de detalhes — construir a URL na mão
+        exigiria supor que os dois ids são iguais, o que só vale na amostra.
+        """
+        numero = self._valor_limpo(cnj_origem)
+        if not numero:
+            return False
+
+        logger.info(f"🔎 [RECURSO CÍVEL] Abrindo pasta de origem {numero}...")
+        # Nome do cliente PRIMEIRO: o numero do processo de origem nem sempre
+        # esta' cadastrado do jeito que o Forms respondeu; o cliente sempre esta'.
+        # O CNJ serve para escolher a linha certa entre as pastas do cliente.
+        href_detalhes = None
+        for termo in [t for t in (cliente, numero) if t]:
+            self._pesquisar_processos(termo)
+            href_detalhes = self._link_detalhes_da_busca(numero)
+            if href_detalhes:
+                logger.info(f"   ✓ Pasta encontrada pesquisando por {termo!r}")
+                break
+            logger.info(f"   ℹ Nada conclusivo pesquisando por {termo!r}")
+
+        if not href_detalhes:
+            self.last_error_reason = (
+                f"Pasta de origem {numero} nao encontrada (nem por cliente {cliente!r})")
+            logger.error(f"[RECURSO CÍVEL] {self.last_error_reason}")
+            return False
+
+        self.page.goto(urljoin(self.page.url, href_detalhes),
+                       wait_until='domcontentloaded', timeout=30000)
+        time.sleep(2.0)
+
+        href_novo = self.page.evaluate(
+            """
+            () => {
+                const a = document.querySelector('a[href*="/processos/recursos/create"]');
+                return a ? a.getAttribute('href') : null;
+            }
+            """
+        )
+        if not href_novo:
+            self.last_error_reason = (
+                "Link 'Novo recurso' nao encontrado na barra de acoes da pasta")
+            logger.error(f"[RECURSO CÍVEL] {self.last_error_reason}")
+            return False
+
+        # Le da origem (antes de sair dela) o que o recurso vai exigir e o Forms
+        # nao responde. Guardado aqui porque a tela de criacao ja' e' outra.
+        id_pasta = re.search(r'/details/(\d+)', href_detalhes)
+        self._obrigatorios_origem = (
+            self._ler_obrigatorios_da_origem(id_pasta.group(1)) if id_pasta else {})
+
+        self.page.goto(urljoin(self.page.url, href_novo),
+                       wait_until='domcontentloaded', timeout=30000)
+        time.sleep(2.0)
+        logger.info(f"   ✓ Formulário de novo recurso aberto ({self.page.url})")
+        return True
+
+    def _solicitar_monitoramento_numero(self) -> bool:
+        """Botão 'Solicitar monitoramento' do painel 'Número do processo'
+        (#litigation-number-monitoring-button-id) — diferente do de
+        'Monitorar movimentações' (_configurar_monitoramento). Nasce
+        disabled e so' libera depois que o Número CNJ valida (14/08/2026).
+        """
+        limite = time.time() + 8
+        while time.time() < limite:
+            try:
+                estado = self.page.evaluate(
+                    """() => {
+                        const btn = document.getElementById('litigation-number-monitoring-button-id');
+                        if (!btn) return 'ausente';
+                        return btn.disabled ? 'desabilitado' : 'pronto';
+                    }"""
+                )
+            except Exception:
+                estado = 'ausente'
+            if estado == 'pronto':
+                try:
+                    self.page.locator('#litigation-number-monitoring-button-id').click(timeout=3000)
+                    logger.info("   ✓ Solicitar monitoramento (número do processo) clicado")
+                    return True
+                except Exception as e:
+                    logger.warning(f"   ⚠ Solicitar monitoramento: clique falhou — {e}")
+                    return False
+            if estado == 'ausente':
+                return False
+            time.sleep(1)
+        logger.warning("   ⚠ Solicitar monitoramento: continuou desabilitado")
+        return False
+
+    def _configurar_monitoramento(self, dados: dict) -> bool:
+        """Painel 'Monitorar movimentações': órgão + tipo de consulta.
+
+        O tipo de consulta é por tribunal (o TJSP lista e-SAJ), então em vez de
+        cravar a opção escolhe-se a que casa a instância E 'número do processo'
+        — o único caminho que não depende de credencial.
+        """
+        if not self.page.query_selector('#movements-monitoring-config-courts-dropdown'):
+            return False
+
+        orgao = self._obter_de_forms(dados, 'orgao')
+        if orgao:
+            try:
+                opcoes = self.page.eval_on_selector_all(
+                    '#movements-monitoring-config-courts-dropdown option',
+                    "els => els.map(e => e.text.trim()).filter(Boolean)") or []
+                melhor = max(
+                    (o for o in opcoes if self._compartilha_identidade([orgao], o)),
+                    key=lambda o: self._calcular_similaridade(orgao, o), default='')
+                if melhor:
+                    self.page.select_option(
+                        '#movements-monitoring-config-courts-dropdown', label=melhor)
+                    logger.info(f"   ✓ Monitoramento/Órgão: {melhor}")
+            except Exception as e:
+                logger.warning(f"   ⚠ monitoramento/orgao: {e}")
+
+        instancia = _normalizar_pedido(self._obter_de_forms(dados, 'instancia') or '')
+        grau = '2' if '2' in instancia else ('1' if '1' in instancia else '')
+        # As opcoes so' aparecem uns segundos depois de 'Solicitar monitoramento'
+        # (numero do processo) — ler cedo demais achava a lista vazia e o
+        # painel inteiro era dado como sem tipo de consulta (14/08/2026).
+        tipos: list[str] = []
+        limite = time.time() + 15
+        while time.time() < limite and not tipos:
+            try:
+                tipos = self.page.eval_on_selector_all(
+                    '#movements-monitoring-field-tipoconsulta-id option',
+                    "els => els.map(e => e.text.trim()).filter(Boolean)") or []
+            except Exception:
+                tipos = []
+            if not tipos:
+                time.sleep(0.5)
+        por_numero = [t for t in tipos if 'numero do processo' in _normalizar_pedido(t)]
+        escolha = next((t for t in por_numero if grau and f'{grau}' in t and 'grau' in t.lower()),
+                       next((t for t in por_numero
+                             if _normalizar_pedido(t) == 'numero do processo'), ''))
+        if not escolha:
+            logger.warning("   ⚠ monitoramento: nenhum tipo de consulta por número do processo")
+            return False
+        try:
+            self.page.select_option('#movements-monitoring-field-tipoconsulta-id', label=escolha)
+            logger.info(f"   ✓ Monitoramento/Tipo de consulta: {escolha}")
+            # O botao so' habilita depois do 'change' da selecao acima assentar.
+            limite_btn = time.time() + 5
+            habilitado = False
+            while time.time() < limite_btn:
+                try:
+                    habilitado = not self.page.eval_on_selector(
+                        '#movements-monitoring-next-button-id', 'el => el.disabled')
+                except Exception:
+                    habilitado = False
+                if habilitado:
+                    break
+                time.sleep(0.3)
+            btn = self.page.query_selector('#movements-monitoring-next-button-id')
+            if btn and habilitado:
+                btn.click()
+                time.sleep(2)
+                erro = self.page.query_selector('#movements-error-message:not([hidden])')
+                if erro:
+                    logger.warning("   ⚠ monitoramento recusado pelo LegalOne (tipo em manutenção)")
+                    return False
+                logger.info("   ✓ Monitoramento solicitado")
+            elif btn:
+                logger.warning("   ⚠ monitoramento: botão continuou desabilitado após selecionar")
+                return False
+            return True
+        except Exception as e:
+            logger.warning(f"   ⚠ monitoramento/tipo de consulta: {e}")
+            return False
+
+    def _selecionar_vinculo(self, numero: str, forcar: bool = False) -> bool:
+        """Escolhe a pasta de origem no lookup 'Vinculado a' — só por teclado.
+
+        Clicar na linha da grade deixava o campo vazio e o POST voltava com
+        'Campo obrigatório' no vínculo (14/08/2026). O aceite é o hidden
+        #VinculoId com valor E o texto visível preenchido.
+        """
+        # Aberto pela pasta ('Novo recurso' dentro do processo), o vínculo já vem
+        # apontado e válido — mexer nele so' quebra o que ja' esta' certo.
+        ja_valido = (not forcar
+                     and self._lookup_gravou('VinculoId')
+                     and self._texto_do_campo('VinculoText').strip()
+                     and '\t' not in self._texto_do_campo('VinculoText'))
+        if ja_valido:
+            logger.info(f"   ✓ Vínculo já preenchido: "
+                        f"{self._texto_do_campo('VinculoText')[:50]} — não mexo")
+            return True
+
+        try:
+            campo = self.page.locator('#VinculoText')
+            campo.click(timeout=8000)
+            campo.fill('')
+            campo.type(numero, delay=40)
+            campo.press('Enter')
+            time.sleep(1.5)
+            for _ in range(3):
+                if self._opcoes_lookup_visiveis():
+                    break
+                time.sleep(1)
+            campo.press('ArrowDown')
+            time.sleep(0.3)
+            campo.press('Enter')
+            time.sleep(1.0)
+        except Exception as e:
+            logger.warning(f"   ⚠ vinculo: {e}")
+            return False
+
+        texto = self._texto_do_campo('VinculoText')
+        if not self._lookup_gravou('VinculoId') or not texto.strip():
+            logger.error(f"   ❌ Vínculo NAO selecionado (texto={texto[:40]!r}, "
+                         f"id={self._texto_do_campo('VinculoId')!r})")
+            return False
+        logger.info(f"   ✓ Vínculo: {texto[:60]} (id={self._texto_do_campo('VinculoId')})")
+        return True
+
+    def _checar_vinculo(self, etapa: str) -> None:
+        """Rastreia QUEM zera o vínculo: ele some sozinho no meio do preenchimento."""
+        vid = self._texto_do_campo('VinculoId')
+        if not vid:
+            logger.warning(f"   ⚠ [VINCULO] vazio depois de: {etapa}")
+        else:
+            logger.debug(f"   [VINCULO] ok depois de {etapa} (id={vid})")
+
+    def _preencher_novo_recurso(self, dados: dict) -> bool:
+        """Preenche e salva o formulário 'Novo recurso' (tela /processos/recursos/create).
+
+        Os ids são os mesmos da ficha do processo, então o preenchimento reusa
+        `_preencher_ficha_forms`. Só o que é próprio desta tela fica aqui:
+        número CNJ do recurso, tipo de procedimento e tipo de vínculo.
+        """
+        def obter(*campos):
+            return self._obter_de_forms(dados, *campos)
+
+        cnj_recurso = self._valor_limpo(dados.get('cnj'))
+
+        tipo = (obter('tipo_processo') or 'Judicial').strip().lower()
+        radio = {
+            'judicial': 'tipo-relacionamento-processo-judicial',
+            'administrativo': 'tipo-relacionamento-processo-administrativo',
+            'arbitral': 'tipo-relacionamento-processo-arbitral',
+        }.get(tipo)
+        self._checar_vinculo('abertura da tela')
+        if radio:
+            try:
+                self.page.check(f'#{radio}')
+            except Exception as e:
+                logger.warning(f"   ⚠ tipo de procedimento ({tipo}): {e}")
+            self._checar_vinculo(f'radio tipo={tipo}')
+
+        # VINCULO: NAO SE MEXE. Aberto por 'Novo recurso' dentro da pasta, ele ja'
+        # vem apontado para a origem. Tanto digitar no campo quanto clicar em
+        # 'Preencher campos de acordo com o vinculo' (que re-renderiza a tela)
+        # zeravam o #VinculoId e o POST voltava com 'Campo obrigatorio'.
+        logger.info(f"   ℹ Vínculo (pré-preenchido, não mexo): "
+                    f"{self._texto_do_campo('VinculoText')[:50]!r}")
+
+        # CNJ depois da herança: o 'preencher pelo vínculo' copia dados da
+        # origem e não pode sobrescrever o número do próprio recurso.
+        if cnj_recurso:
+            self._preencher_texto_por_id('NumeroCNJ', cnj_recurso)
+            self._checar_vinculo('NumeroCNJ')
+            self._solicitar_monitoramento_numero()
+
+        # CAUSA RAIZ (14/08/2026): trocar o 'Tipo de vínculo' faz o widget
+        # recarregar a lista de processos vinculáveis e LIMPAR o #VinculoId —
+        # era isso que zerava o vínculo, não a herança nem os lookups. A tela
+        # já abre com 'Recurso', então só se mexe se estiver diferente; e nesse
+        # caso o vínculo precisa ser reescolhido depois.
+        tipo_vinculo = obter('tipo_vinculo')
+        atual = ''
+        try:
+            atual = self.page.eval_on_selector(
+                '#VinculoTipoId',
+                "el => el.selectedIndex >= 0 ? el.options[el.selectedIndex].text.trim() : ''") or ''
+        except Exception:
+            pass
+        # A tela abre com 'Processo', que e' o certo: o recurso e' vinculado AO
+        # PROCESSO de origem. O 'Tipo de vínculo: Recurso' do Forms descreve a
+        # natureza do vínculo, não a entidade — trocar o select so' recarregava
+        # a lista e apagava o vínculo.
+        logger.info(f"   ℹ Vinculado a: {atual!r} (Forms diz {tipo_vinculo!r}) — não mexo")
+        self._checar_vinculo('tipo de vínculo')
+
+        self._configurar_monitoramento(dados)
+        self._checar_vinculo('painel de monitoramento')
+
+        # Justiça (CNJ) destrava Instância → Classe/Assunto e, com a UF, o Foro.
+        # Ninguém responde isso no Forms: sai do 14º dígito do próprio CNJ.
+        if not dados.get('justica'):
+            justica = self._justica_do_cnj(cnj_recurso)
+            if justica:
+                dados['justica'] = justica
+        # 'Vara/turma' (#NumeroVaraTurma) aceita só o NÚMERO — mandar
+        # "Gab. 01 - 6ª Câmara de Direito Privado" inteiro fazia o POST voltar
+        # com o campo invalido. O catalogo do lookup Vara guarda so' o nome
+        # BASE, sem 'Gab. NN -' nem ordinal (confirmado na pasta 7525 real:
+        # VaraText='Câmara de Direito Privado', NumeroVaraTurma='6') — mas o
+        # formato varia por tribunal/justica (Câmara, Vara, Turma, Vara do
+        # Trabalho, Vara Federal...), entao NAO da' pra cravar um jeito so' de
+        # cortar o prefixo. Em vez disso manda VARIOS candidatos (original +
+        # sem gabinete + sem ordinal) e deixa o score de _preencher_lookup_por_id
+        # (mesmo mecanismo de qualquer outro lookup) escolher o que bate
+        # (14/08/2026).
+        busca_vara = None
+        turma = self._valor_limpo(dados.get('numero_turma')) or ''
+        if turma and not turma.isdigit():
+            m = re.search(r'(\d+)\s*[ªº°]', turma) or re.search(r'(\d+)', turma)
+            numero = m.group(1).lstrip('0') if m else ''
+            sem_gabinete = re.sub(
+                r'^\s*gab\.?\s*\d+\s*-\s*', '', turma, flags=re.IGNORECASE).strip()
+            sem_ordinal = re.sub(r'^\s*\d+\s*[ªº°]\s*', '', sem_gabinete).strip()
+            # ORDEM IMPORTA: _abrir_lista_lookup so' usa o PRIMEIRO candidato pra
+            # gerar o prefixo digitado na busca (os outros so' entram na hora
+            # de pontuar as opcoes JA encontradas) — com o texto sujo primeiro
+            # ("Gab. 01 - 6ª Câmara...") a digitacao nunca achava nada pra
+            # abrir a lista. O mais limpo tem que vir primeiro (14/08/2026).
+            candidatos = [c for c in dict.fromkeys((sem_ordinal, sem_gabinete, turma)) if c]
+            busca_vara = '|'.join(candidatos)
+            if not dados.get('nome_vara_turma'):
+                dados['nome_vara_turma'] = turma
+            dados['numero_turma'] = numero
+            logger.info(f"   ↪ Vara/turma: numero={dados['numero_turma']!r} "
+                        f"candidatos={candidatos}")
+
+        # No recurso, a 'Ação' da ficha é o próprio tipo de recurso.
+        if not dados.get('acao') and dados.get('tipo_classe_recurso'):
+            dados['acao'] = dados['tipo_classe_recurso']
+
+        # Só o que é do RECURSO. O resto (natureza, procedimento, classe,
+        # personalizados, envolvidos) vem da herança do vínculo — insistir nesses
+        # campos só gastava tempo e arriscava sobrescrever o que já estava certo.
+        for base, campos in (
+            ('Justica', ('justica',)),                       # destrava Instancia
+            ('UF', ('uf',)),
+            ('Instancia', ('instancia',)),                   # 2º Grau ≠ origem
+            ('Cidade', ('cidade',)),
+            ('Foro', ('comarca', 'cidade_comarca')),
+            ('Orgao', ('orgao',)),
+            ('TipoAcao', ('tipo_classe_recurso', 'acao')),   # 'Tipo de recurso'
+            ('Vara', ('nome_vara_turma',)),
+            ('Cliente_Envolvido', ('cliente',)),
+            ('Cliente_PosicaoEnvolvido', ('posicao',)),
+            ('Contrario_Envolvido', ('contrario',)),
+            ('Responsavel_Envolvido', ('advogado',)),
+        ):
+            valor = obter(*campos)
+            if valor and self._estado_campo(f'{base}Id') == 'vazio':
+                busca = busca_vara if base == 'Vara' else None
+                self._preencher_lookup_por_id(f'{base}Text', f'{base}Id', valor, busca=busca)
+                self._checar_vinculo(f'lookup {base}')
+
+        for id_campo, campos in (
+            ('NumeroVaraTurma', ('numero_turma',)),
+            ('NumeroAntigo', ('numero_antigo',)),
+            ('Observacoes', ('observacoes',)),
+        ):
+            valor = obter(*campos)
+            if valor and self._estado_campo(id_campo) == 'vazio':
+                self._preencher_texto_por_id(id_campo, valor)
+
+        self._aplicar_obrigatorios_herdados(getattr(self, '_obrigatorios_origem', {}) or {})
+        self._checar_vinculo('obrigatorios herdados')
+
+        # So mexe se a tela nao trouxe nada: confirmado ao vivo que a tela nem
+        # sempre nasce com a data de hoje, e sobrescrever apagava um valor ja
+        # certo (14/08/2026).
+        data_dist = obter('data_distribuicao')
+        if data_dist and self._estado_campo('DataDistribuicao') == 'vazio':
+            self._preencher_data_por_id('DataDistribuicao', data_dist)
+
+        self._preencher_pedidos_recurso(dados)
+
+        # ponytail: Objetos fica de fora — e' campo de CATALOGO (frases curtas
+        # tipo 'Benefício da Justiça Gratuita'), nao texto livre; o paragrafo
+        # do objeto_recurso do Forms nao mapeia pra isso com confianca (visto
+        # na pasta 7525 real: o catalogo so' aceita nome curto, e forcar um
+        # match de baixa confianca e' pior que deixar em branco).
+        if dados.get('objetos_recurso'):
+            logger.warning("   ⚠ [RECURSO CÍVEL] preencher manualmente: objetos_recurso")
+
+        # Estado real da tela antes do POST: o log de cada lookup mostra a opcao
+        # ESCOLHIDA, nao o que ficou no campo — sem isso nao da' para saber se a
+        # selecao commitou ou se sobrou texto digitado.
+        for id_text in ('VinculoText', 'JusticaText', 'UFText', 'InstanciaText', 'ForoText',
+                        'TipoAcaoText', 'OrgaoText', 'Cliente_EnvolvidoText',
+                        'Cliente_PosicaoEnvolvidoText', 'Contrario_EnvolvidoText'):
+            id_hidden = id_text[:-4] + 'Id'
+            logger.info("   [DBG] %s=%r  %s=%r", id_text,
+                        self._texto_do_campo(id_text)[:60],
+                        id_hidden, self._texto_do_campo(id_hidden))
+
+        if not self._lookup_gravou('VinculoId'):
+            logger.warning("   ⚠ vínculo veio vazio da tela — o POST vai recusar")
+
+        logger.info("[RECURSO CÍVEL] Salvando novo recurso...")
+        # 'Salvar' (value=0) e' o botao da esquerda do split; o value=1 fica no
+        # menu 'Salvar e ...' e nem sempre esta visivel — clicar por JS evita
+        # esperar 90s por visibilidade.
+        botao = self.page.locator(
+            'button[name="ButtonSave"][value="0"], button[name="ButtonSave"], #btnSave').first
+        try:
+            if not botao.count():
+                self.last_error_reason = "Botao Salvar nao encontrado no formulario de recurso"
+                logger.error(f"[RECURSO CÍVEL] {self.last_error_reason}")
+                return False
+        except Exception:
+            pass  # pagina ja pode estar navegando por outro motivo; tenta clicar assim mesmo
+        try:
+            botao.click(timeout=10000)
+        except Exception:
+            # o submit navega e derruba o contexto: isso NAO e' falha de clique
+            try:
+                self.page.evaluate(
+                    "() => document.querySelector('button[name=ButtonSave]').click()")
+            except Exception:
+                pass
+
+        # CAUSA RAIZ (14/08/2026): o redirect pos-save pode demorar mais que o
+        # poll original julgava, e ler o DOM no meio da navegacao estoura
+        # 'Execution context was destroyed' — isso e' SINAL DE NAVEGACAO
+        # ACONTECENDO, nao prova de erro. Um recurso real foi salvo (pasta
+        # 7525) enquanto o codigo antigo reportava falha por causa disso.
+        # Dai pra frente NADA aqui pode derrubar o fluxo: qualquer leitura que
+        # falhar e' tratada como "ainda navegando", nunca como erro fatal.
+        def _url_segura() -> str:
+            for _ in range(8):
+                try:
+                    return (self.page.url or '').lower()
+                except Exception:
+                    time.sleep(0.5)
+            return ''
+
+        for _ in range(8):
+            try:
+                self.page.wait_for_load_state('domcontentloaded', timeout=3000)
+                break
+            except Exception:
+                time.sleep(1)
+
+        url_atual = _url_segura()
+        if '/recursos/create' in url_atual:
+            # pode ser estado transitorio de um redirect lento — espera mais
+            # um pouco e reconfirma antes de tratar como validacao rejeitada
+            time.sleep(3)
+            url_atual = _url_segura()
+
+        if '/recursos/create' in url_atual:
+            try:
+                erros = self.page.evaluate(
+                    """
+                    () => {
+                        const msgs = Array.from(document.querySelectorAll(
+                            '.field-validation-error, .validation-summary-errors, .error-message,'
+                            + ' [data-valmsg-summary] li, .input-validation-error'
+                        )).map(e => (e.innerText || '').trim()).filter(Boolean);
+                        // campo invalido sem texto: diz QUAL campo esta' marcado
+                        const marcados = Array.from(document.querySelectorAll(
+                            '.input-validation-error, .lookup.invalid, [aria-invalid="true"]'
+                        )).map(e => e.id || e.getAttribute('name')
+                            || (e.querySelector('input') || {}).id || '').filter(Boolean);
+                        return [...new Set([...msgs, ...marcados.map(m => 'campo:' + m)])].slice(0, 12);
+                    }
+                    """
+                ) or []
+            except Exception:
+                # evaluate morreu = navegacao ainda em curso, nao erro de validacao
+                erros = []
+            if erros:
+                try:
+                    self.page.screenshot(path='qa_screenshots/recurso_civel_nao_salvou.png',
+                                         full_page=True)
+                    with open('debug_recurso_civel_nao_salvou.html', 'w', encoding='utf-8') as f:
+                        f.write(self.page.content())
+                except Exception:
+                    pass
+                self.last_error_reason = "Recurso nao salvou: " + '; '.join(erros)
+                logger.error(f"[RECURSO CÍVEL] {self.last_error_reason}")
+                return False
+            # sem erro de validacao capturado: a URL sozinha nao prova nada
+            # (ja vimos um save real com URL ainda mostrando /create por
+            # alguns segundos) — decide pela busca, nao por aqui.
+            logger.info(
+                "   ℹ ainda em /create sem erro de validacao capturado — "
+                "confirmando pela busca em vez de desistir")
+
+        try:
+            self.page.screenshot(path='qa_screenshots/recurso_civel_pos_save.png',
+                                 full_page=True)
+            with open('debug_recurso_civel_pos_save.html', 'w', encoding='utf-8') as f:
+                f.write(self.page.content())
+        except Exception:
+            pass
+        try:
+            logger.info(f"   [POS-SAVE] url={self.page.url} titulo={self.page.title()!r}")
+        except Exception:
+            logger.info("   [POS-SAVE] pagina ainda navegando")
+
+        if not self._existe_processo_na_busca(cnj_recurso):
+            self.last_error_reason = (
+                f"POST concluido mas o recurso {cnj_recurso} nao aparece na pesquisa "
+                "— nao foi gravado")
+            logger.error(f"[RECURSO CÍVEL] {self.last_error_reason}")
+            return False
+
+        self._capturar_numero_pasta(dados)
+        logger.info(f"\n✅ [RECURSO CÍVEL] recurso {cnj_recurso} criado e confirmado na busca")
+        return True
+
+    def _existe_processo_na_busca(self, numero: str) -> bool:
+        """Evidencia no sistema: o numero aparece na pesquisa de processos?"""
+        alvo = re.sub(r'\D', '', str(numero or ''))
+        if not alvo:
+            return False
+        try:
+            self.page.goto(
+                'https://carvalhofurtadoadv.novajus.com.br/processos/processos/search',
+                wait_until='domcontentloaded', timeout=25000)
+            campo = self.page.wait_for_selector('#Search, input[name="Search"]', timeout=15000)
+            campo.click()
+            campo.fill('')
+            campo.type(numero, delay=30)
+            self.page.click('#search-box-input-submit, input[value="Pesquisar"]')
+            self.page.wait_for_load_state('domcontentloaded')
+            time.sleep(2.5)
+            texto = self.page.evaluate("() => document.body.innerText.replace(/\\D/g, '')")
+            return alvo in (texto or '')
+        except Exception as e:
+            logger.warning(f"   ⚠ nao consegui confirmar na busca: {e}")
+            return False
+
+    def _fluxo_recurso_civel(self, dados_processo):
+        """Recurso cível: cria 'Novo recurso' DENTRO da pasta do processo de origem.
+
+        O CNJ do próprio recurso vai no formulário; o processo de origem vem do
+        campo 'Vínculo' do Forms e é o que se pesquisa para achar a pasta.
+        """
+        dados = dados_processo or {}
+        origem = self._valor_limpo(dados.get('vinculo'))
+        if not origem or len(re.sub(r'\D', '', origem)) != 20:
+            self.last_error_reason = (
+                f"Recurso cível sem vínculo com CNJ de origem (vinculo={dados.get('vinculo')!r}) "
+                "— tratar manualmente")
+            logger.error(f"[RECURSO CÍVEL] {self.last_error_reason}")
+            return False
+
+        try:
+            if not self._abrir_novo_recurso_da_pasta(
+                    origem, self._valor_limpo(dados.get('cliente')) or ''):
+                return False
+            return self._preencher_novo_recurso(dados)
+        except NavegadorFechado as e:
+            logger.error(f"⛔ Recurso cível abortado: {e}")
+            self.last_error_reason = str(e)
+            return False
+        except Exception as e:
+            logger.error(f"[RECURSO CÍVEL] Erro no fluxo: {e}")
+            self._registrar_diagnostico_falha("Fluxo Recurso Civel", str(e))
             return False
 
     def _fluxo_arquivamento_completo(self, dados_processo):
@@ -9402,6 +10256,13 @@ class LegalOneCadastro:
         if tipo_tarefa == 'RECURSO':
             logger.info("\n[ROTEADOR] 🟠 Tipo RECURSO detectado → Fluxo de Recurso")
             return self._fluxo_recurso(dados_processo)
+
+        # Civel: recurso e' um registro NOVO dentro da pasta de origem
+        # ('Novo recurso' na barra de acoes), nao alteracao do processo (trabalhista)
+        # nem processo avulso — cair no fluxo de cadastro criaria pasta solta.
+        if tipo_tarefa == 'RECURSO_CIVEL':
+            logger.info("\n[ROTEADOR] 🟠 RECURSO CÍVEL → Novo recurso na pasta de origem")
+            return self._fluxo_recurso_civel(dados_processo)
 
         # Arquivamento e' operacao sobre processo existente, nao cadastro. Cair
         # no fluxo de cadastro abria o processo para alteracao e mexia onde nao
@@ -10262,10 +11123,16 @@ class LegalOneCadastro:
             tipo_raw = (m_tipo.group(1) if m_tipo else 'êxito').lower()
             grau_raw = (m_grau.group(1) if m_grau else 'possível').lower()
 
-            # Nome = tudo que sobra após remover valor, tipo, grau, separadores
-            nome = linha
+            # Nome = tudo que sobra após remover numeração, valor, tipo, grau
+            # (recurso cível manda "1. Nome do pedido (Êxito - provável)";
+            # sem tirar a numeração e o parenteses vazio que sobra depois de
+            # remover tipo/grau, o nome ficava sujo demais pra bater no
+            # catalogo — 14/08/2026)
+            nome = re.sub(r'^\s*\d+[\.\)]\s*', '', linha)
             for pattern in [re_valor, re_tipo, re_grau]:
                 nome = pattern.sub('', nome)
+            # parenteses que sobraram vazios/so com separador: "( - )", "()"
+            nome = re.sub(r'\(\s*[-–—]?\s*\)', '', nome)
             # Limpar R$, separadores residuais
             nome = re.sub(r'R\$', '', nome)
             nome = nome.strip(' ,;./-–—\t')
@@ -11005,6 +11872,45 @@ class LegalOneCadastro:
             logger.warning(f"      ⚠ Falha ao preencher pedido '{item.get('pedido', '?')}': {e}")
             return False
 
+    def _preencher_pedidos_recurso(self, dados: dict) -> tuple[int, int]:
+        """Painel Pedidos do recurso cível, a partir de 'classificacao_pedidos_recurso'
+        (texto livre do Forms — diferente do trabalhista, que e' múltipla escolha).
+
+        Reusa o MESMO parser/preenchedor do cadastro inicial
+        (_parse_pedidos_detalhados / _clicar_adicionar_pedido /
+        _preencher_linha_pedido_atual) em vez de reescrever: o campo Nome do
+        pedido busca contra o catalogo AO VIVO na tela (mesmo mecanismo do
+        Vara/Justiça/Área), entao um item sem match no catalogo so' falha
+        aquele item — nunca commita um nome errado (14/08/2026).
+        """
+        texto = self._valor_limpo(self._obter_de_forms(dados, 'classificacao_pedidos_recurso')) or ''
+        itens = self._parse_pedidos_detalhados(texto)
+        if not itens:
+            return 0, 0
+
+        # Defensivo: linhas escondidas (offsetHeight=0) de arvores anteriores
+        # (Área) ficam no DOM — Escape/clique so' escondem, nao removem, e o
+        # seletor generico de dropdown do Pedido nao filtra por visibilidade
+        # em alguns padroes, entao ainda acha essas linhas (14/08/2026).
+        try:
+            self.page.keyboard.press('Escape')
+            self.page.evaluate(
+                """() => document.querySelectorAll(
+                    '.lookup-dropdown tr[data-val-level], .lookup-dropdown .treeTable tr.initialized'
+                ).forEach(tr => { if (tr.offsetHeight === 0) tr.remove(); })"""
+            )
+        except Exception:
+            pass
+        time.sleep(0.3)
+        for item in itens:
+            item.setdefault('contingencia_id', '')
+            item.setdefault('data_pedido', '')
+            item.setdefault('data_julgamento', '')
+
+        return self._executar_loop_pedidos(itens)
+        logger.info(f"   [RECURSO CÍVEL] Pedidos: {ok}/{len(itens)} preenchidos")
+        return ok, len(itens)
+
     def _preencher_pedidos_forms(self, dados_processo: dict | None) -> tuple[int, int]:
         texto = self._extrair_texto_detalhes_pedidos(dados_processo or {})
         logger.info(f"   [DEBUG-PEDIDOS] Texto extraído: {repr(texto[:300]) if texto else '(vazio)'}")
@@ -11079,6 +11985,16 @@ class LegalOneCadastro:
             item['data_pedido'] = data_pedido
             item['data_julgamento'] = data_julgamento
 
+
+        return self._executar_loop_pedidos(itens)
+
+    def _executar_loop_pedidos(self, itens: list[dict]) -> tuple[int, int]:
+        """Loop de clicar 'Adicionar pedido' + preencher cada linha, com retry
+        via guardian (Vision). Compartilhado entre cadastro inicial
+        (_preencher_pedidos_forms) e recurso cível (_preencher_pedidos_recurso)
+        — mesmos comandos pros dois, so' muda de onde os itens vieram
+        (14/08/2026).
+        """
         logger.info(f"4ï¸âƒ£  Preenchendo pedidos do Forms ({len(itens)} itens)...")
         preenchidos = 0
         guardian = self._get_guardian()

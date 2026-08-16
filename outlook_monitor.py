@@ -35,11 +35,14 @@ class OutlookMonitor:
         Inicializa o monitor do Outlook
 
         Args:
-            assunto_filtro: Parte do assunto para filtrar emails
+            assunto_filtro: Parte do assunto (str) ou lista de assuntos para filtrar emails
             remetente_filtro: Dominio ou email do remetente
             intervalo_checagem: Intervalo em segundos entre verificacoes
         """
-        self.assunto_filtro = assunto_filtro
+        if isinstance(assunto_filtro, str):
+            self.assunto_filtro = [assunto_filtro]
+        else:
+            self.assunto_filtro = list(assunto_filtro)
         self.remetente_filtro = remetente_filtro
         self.intervalo_checagem = intervalo_checagem
         self.emails_processados = set()
@@ -110,7 +113,7 @@ class OutlookMonitor:
         logger.warning("[AVISO] Nenhum link do Forms encontrado no email")
         return None
 
-    def extrair_dados_email(self, email):
+    def extrair_dados_email(self, email, assunto_detectado=None):
         """Extrai dados relevantes do email"""
         try:
             corpo = ""
@@ -131,6 +134,7 @@ class OutlookMonitor:
                 'entry_id': email.EntryID,
                 'forms_link': None if eh_copilot else self.extrair_link_forms(corpo),
                 'dados_diretos': self.extrair_dados_direto(corpo) if eh_copilot else None,
+                'assunto_detectado': assunto_detectado,
             }
 
             logger.info(f"[EMAIL] Extraido:")
@@ -180,10 +184,17 @@ class OutlookMonitor:
                     except:
                         continue
 
-                    # Verifica assunto
+                    # Verifica assunto (aceita lista de assuntos)
                     try:
-                        if self.assunto_filtro and self.assunto_filtro not in message.Subject:
-                            continue
+                        if self.assunto_filtro:
+                            assunto_detectado = next(
+                                (a for a in self.assunto_filtro if a in message.Subject),
+                                None,
+                            )
+                            if not assunto_detectado:
+                                continue
+                        else:
+                            assunto_detectado = ""
                     except:
                         continue
 
@@ -196,7 +207,7 @@ class OutlookMonitor:
                     except:
                         continue
 
-                    dados = self.extrair_dados_email(message)
+                    dados = self.extrair_dados_email(message, assunto_detectado)
                     # Aceita e-mail se tiver link do Forms OU dados diretos do Copilot
                     if dados and (dados['forms_link'] or dados['dados_diretos']):
                         emails_encontrados.append(dados)
@@ -228,7 +239,7 @@ class OutlookMonitor:
         """Monitora continuamente novos emails"""
         logger.info("="*60)
         logger.info("[INICIO] Monitoramento continuo do Outlook")
-        logger.info(f"[CONFIG] Assunto contem: '{self.assunto_filtro}'")
+        logger.info(f"[CONFIG] Assunto contem: {self.assunto_filtro}")
         logger.info(f"[CONFIG] Remetente contem: '{self.remetente_filtro}'")
         logger.info(f"[CONFIG] Intervalo: {self.intervalo_checagem}s")
         logger.info("="*60)

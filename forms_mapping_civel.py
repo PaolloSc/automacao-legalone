@@ -18,12 +18,15 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 from typing import Any
 
+import re
+
 from forms_mapping import (
     CampoForms,
     _buscar_por_alias,
     _filtrar_valores,
     _indice_perguntas,
     _normalizar_entrada_perguntas,
+    normalizar_pergunta,
     normalizar_texto,
 )
 
@@ -70,7 +73,10 @@ TIPO_ALIAS = {
 TIPO_TAREFA_POR_CADASTRO = {
     "CADASTRO INICIAL": "CADASTRO_INICIAL",
     "DECISOES": "DECISAO",
-    "RECURSO": "RECURSO",
+    # No cível o recurso é um registro NOVO criado DENTRO da pasta de origem
+    # ('Novo recurso' na barra de ações do processo), não uma alteração do
+    # processo como no trabalhista — por isso tem fluxo próprio.
+    "RECURSO": "RECURSO_CIVEL",
     "ARQUIVAMENTO": "ARQUIVAMENTO",
     "INCIDENTE": "INCIDENTE",
 }
@@ -713,7 +719,13 @@ def mapear_formulario(dados: dict[str, Any] | list[dict[str, Any]]) -> dict[str,
 
     for item in perguntas:
         pergunta = str(item.get("pergunta") or "").strip()
-        if pergunta and normalizar_texto(pergunta) not in conhecidas:
+        # o Forms manda "3. Numero de CNJ Required to answer. Single line text.";
+        # comparar so o texto cru marcava TODAS as perguntas como nao mapeadas
+        if (
+            pergunta
+            and normalizar_texto(pergunta) not in conhecidas
+            and normalizar_pergunta(pergunta) not in conhecidas
+        ):
             resultado["nao_mapeados"].append(
                 {
                     "pergunta": pergunta,
@@ -783,6 +795,25 @@ def _autoteste() -> None:
     opcional = {c.campo for c in DECISOES_FIELDS if not c.obrigatorio}
     obrigatorio = {c.campo for c in ARQUIVAMENTO_FIELDS if c.obrigatorio}
     assert "situacao_pedido" in opcional and "situacao_pedido" in obrigatorio
+
+    # RECURSO: abre o processo de origem (vínculo), não o número do recurso;
+    # e pergunta numerada com metadados do Forms não pode virar "não mapeada"
+    rec = mapear_formulario({
+        "perguntas_forms": [
+            {"pergunta": "1. Tipo de cadastro Required to answer. Single choice.",
+             "resposta": "Processo"},
+            {"pergunta": "2. Tipo de cadastro Required to answer. Single choice.",
+             "resposta": "Recurso"},
+            {"pergunta": "3. Número de CNJ Required to answer. Single line text.",
+             "resposta": "4105424-55.2026.8.26.0000"},
+            {"pergunta": "12. Vínculo (se houver - processo ou serviço) Single line text.",
+             "resposta": "4028550-54.2025.8.26.0100"},
+        ]
+    })
+    assert rec["secao"] == "RECURSO", rec["secao"]
+    assert rec["campos"]["cnj"] == "4028550-54.2025.8.26.0100"
+    assert rec["campos"]["cnj_recurso"] == "4105424-55.2026.8.26.0000"
+    assert rec["nao_mapeados"] == [], rec["nao_mapeados"]
 
     # cada ramificação aponta para seções que existem
     nomes = {s.nome for s in SECOES}

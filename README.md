@@ -238,7 +238,7 @@ Ver [`.env.example`](.env.example). Principais:
 | `GRAPH_JANELA_MINUTOS` | Quanto tempo para trás o monitor olha (padrão 1440) |
 | `LEGALONE_HEADLESS` | `1` roda sem janela; qualquer outra coisa abre o Chrome |
 | `FORMS_RESPOSTA_FIXA` | Trava o extrator numa resposta específica do Forms — para reprocessar |
-| `FORMS_RESPOSTA_MINIMA` | Piso da busca pela última resposta (padrão 830) |
+| `FORMS_RESPOSTA_MINIMA` | Piso da busca pela última resposta; sobrepõe o `resposta_minima` do formulário em `FORMS_TIPOS` (trabalhista 830, cível 232) |
 
 > [!WARNING]
 > Nunca commite o `.env`. Ele está no `.gitignore` por padrão.

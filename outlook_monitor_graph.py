@@ -68,11 +68,15 @@ class OutlookMonitorGraph:
 
     def __init__(
         self,
-        assunto_filtro: str = "Cadastro de processos NOVOS LegalOne trabalhista",
+        assunto_filtro: str | list[str] = "Cadastro de processos NOVOS LegalOne trabalhista",
         remetente_filtro: str = "microsoft.com",
         intervalo_checagem: int = 300,
     ):
-        self.assunto_filtro = assunto_filtro
+        # Suporta um único assunto (compatibilidade) ou lista de assuntos (multinatureza)
+        if isinstance(assunto_filtro, str):
+            self.assunto_filtro = [assunto_filtro]
+        else:
+            self.assunto_filtro = list(assunto_filtro)
         self.remetente_filtro = remetente_filtro
         self.intervalo_checagem = intervalo_checagem
         # Ate onde olhar para tras a cada ciclo. Era fixo em 120 min, o que perdia
@@ -197,10 +201,13 @@ class OutlookMonitorGraph:
             "%Y-%m-%dT%H:%M:%SZ"
         )
 
-        # OData filter: aceita AMBOS assuntos (Forms OU Copilot)
+        # OData filter: aceita TODOS os assuntos de Forms OU Copilot
+        assuntos_forms = " or ".join(
+            f"contains(subject, '{assunto}')" for assunto in self.assunto_filtro
+        )
         filtro_str = (
             f"receivedDateTime ge {data_limite}"
-            f" and (contains(subject, '{self.assunto_filtro}')"
+            f" and (({assuntos_forms})"
             f" or contains(subject, '{self.COPILOT_ASSUNTO}'))"
         )
 
@@ -272,6 +279,12 @@ class OutlookMonitorGraph:
                     continue
 
                 link = self.extrair_link_forms(corpo)
+                # Identifica qual assunto de Forms casou (usado pelo fluxo principal
+                # para escolher o mapeador correto)
+                assunto_detectado = next(
+                    (a for a in self.assunto_filtro if a.lower() in subject.lower()),
+                    self.assunto_filtro[0] if self.assunto_filtro else "",
+                )
                 dados = {
                     "subject": subject,
                     "sender": sender_addr,
@@ -279,6 +292,7 @@ class OutlookMonitorGraph:
                     "body": corpo,
                     "entry_id": msg_id,
                     "forms_link": link,
+                    "assunto_detectado": assunto_detectado,
                     # Quem preencheu — vira destinatario do e-mail de sucesso.
                     "respondente": self.extrair_respondente(corpo),
                 }
@@ -317,7 +331,7 @@ class OutlookMonitorGraph:
         logger.info("=" * 60)
         logger.info("[INICIO] Monitoramento contínuo via Graph API")
         logger.info(f"[CONFIG] Caixa: {self.user_email}")
-        logger.info(f"[CONFIG] Assunto Forms: '{self.assunto_filtro}'")
+        logger.info(f"[CONFIG] Assunto Forms: {self.assunto_filtro}")
         logger.info(f"[CONFIG] Assunto Copilot: '{self.COPILOT_ASSUNTO}'")
         logger.info(f"[CONFIG] Remetente contém: '{self.remetente_filtro}'")
         logger.info(f"[CONFIG] Intervalo: {self.intervalo_checagem}s")

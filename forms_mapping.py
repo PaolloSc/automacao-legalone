@@ -688,12 +688,23 @@ def normalizar_texto(valor: Any) -> str:
 # Sufixos de metadados que o Forms injeta no texto da pergunta,
 # ex.: "Fase Requer resposta. Opção única." → "fase"
 _RE_METADATA_SUFIXO = re.compile(
-    r"\s*\.?\s*(?:requer resposta\.?\s*)?"  # "Requer resposta." opcional
-    r"(?:opcao unica|multipla escolha|texto de linha unica"
-    r"|texto multilinha|texto longo|carregar arquivo|data|classificacao|numero)\b.*$",
+    r"\s*\.?\s*(?:requer resposta|required to answer)\.?\s*"  # "Requer resposta." / "Required to answer."
+    r"(?:opcao unica|single choice|multipla escolha|multiple choice|"
+    r"texto de linha unica|single line text|texto multilinha|multi line text|multiline text|"
+    r"texto longo|long text|carregar arquivo|upload file|data|date|classificacao|numero|number)\b.*$",
     re.IGNORECASE,
 )
-_RE_METADATA_REQUER = re.compile(r"\s+requer resposta\b.*$", re.IGNORECASE)
+_RE_METADATA_REQUER = re.compile(r"\s+(?:requer resposta|required to answer)\b.*$", re.IGNORECASE)
+# Pergunta opcional nao tem "Requer resposta", so o tipo colado no fim:
+# "Numero antigo Single line text." → "numero antigo". O ponto final e' exigido
+# para nao decapitar titulos que comecam/terminam com a palavra ("Data da citacao").
+_RE_METADATA_TIPO = re.compile(
+    r"\s+(?:opcao unica|single choice|multipla escolha|multiple choice|"
+    r"texto de linha unica|single line text|texto multilinha|multi line text|multiline text|"
+    r"texto longo|long text|carregar arquivo|upload file|data|date|classificacao|numero|number)"
+    r"\.\s*$",
+    re.IGNORECASE,
+)
 
 
 def normalizar_pergunta(valor: Any) -> str:
@@ -704,6 +715,7 @@ def normalizar_pergunta(valor: Any) -> str:
     # Ex.: "Fase Requer resposta. Opção única." → "Fase"
     texto = _RE_METADATA_REQUER.sub("", texto)
     texto = _RE_METADATA_SUFIXO.sub("", texto)
+    texto = _RE_METADATA_TIPO.sub("", texto)
     return texto.strip()
 
 
@@ -749,10 +761,33 @@ def _normalizar_entrada_perguntas(dados: Any) -> list[dict[str, Any]]:
     return []
 
 
+_SEM_RESPOSTA = ("nenhuma resposta fornecida", "no answer provided")
+
+
+def _tirar_enunciado(pergunta: str, resposta: str) -> str:
+    """Na view de resposta individual o texto da pergunta vem colado no valor.
+
+    "5. Cliente principal Requer resposta. Texto de linha unica. Amanda Alves"
+    → "Amanda Alves". Sem isso o valor viaja sujo para o LegalOne e checagens
+    sobre ele erram — o 'Vinculo' do recurso tinha 22 digitos por causa do
+    "12." do enunciado e a troca de CNJ nunca disparava (14/08/2026).
+    """
+    if not pergunta or not resposta:
+        return resposta
+    # o enunciado pode ter espaco duplo/nbsp onde a resposta tem um so'
+    padrao = r"^\s*" + r"[\s ]+".join(re.escape(p) for p in pergunta.split()) + r"[\s ]*"
+    limpo = re.sub(padrao, "", resposta, count=1, flags=re.IGNORECASE)
+    if normalizar_texto(limpo).rstrip(".") in _SEM_RESPOSTA:
+        return ""
+    return limpo.strip()
+
+
 def _extrair_resposta(item: dict[str, Any]) -> str:
     resposta = item.get("resposta") or item.get("resposta_texto") or ""
     if resposta:
-        return str(resposta).strip()
+        return _tirar_enunciado(
+            str(item.get("pergunta") or "").strip(), str(resposta).strip()
+        )
     marcadas = item.get("marcadas") or []
     if marcadas:
         return ", ".join(str(x).strip() for x in marcadas if str(x).strip())

@@ -1,4 +1,4 @@
-﻿"""
+"""
 Automação Completa: Outlook + Microsoft Forms + LegalOne
 Monitora emails do Forms e cadastra automaticamente no LegalOne
 """
@@ -46,7 +46,7 @@ except ImportError:
     OUTLOOK_GRAPH_DISPONIVEL = False
 from forms_extractor import FormsExtractor
 from utils.log_formatter import setup_logging
-from config_automacao import LOGGING_CONFIG
+from config_automacao import LOGGING_CONFIG, FORMS_TIPOS
 
 try:
     from forms_extractor_enhanced import EnhancedFormsExtractor
@@ -55,7 +55,15 @@ except Exception:
     ENHANCED_DISPONIVEL = False
 
 from legalone_cadastro import LegalOneCadastro
-from forms_mapping import TIPO_TAREFA_POR_CADASTRO, detectar_tipo_cadastro
+from forms_mapping import TIPO_TAREFA_POR_CADASTRO as TIPO_TAREFA_TRABALHISTA
+from forms_mapping import detectar_tipo_cadastro as detectar_tipo_trabalhista
+
+try:
+    import forms_mapping_civel
+    CIVEL_DISPONIVEL = True
+except Exception as _civel_err:
+    CIVEL_DISPONIVEL = False
+    forms_mapping_civel = None
 
 try:
     from claude_brain import ClaudeBrain
@@ -156,6 +164,20 @@ def rotulos_email_sucesso(
     }
 
 
+def detectar_tipo_forms_pelo_assunto(subject: str | None) -> dict:
+    """Escolhe o mapeador/natureza default a partir do assunto do e-mail."""
+    subject_norm = str(subject or "").lower()
+    for cfg in FORMS_TIPOS:
+        if cfg["assunto_filtro"].lower() in subject_norm:
+            return cfg
+    # Fallback: trabalhista
+    return {
+        "assunto_filtro": "Cadastro de processos NOVOS LegalOne trabalhista",
+        "modulo_mapeamento": "forms_mapping",
+        "natureza_default": "Trabalhista",
+    }
+
+
 class AutomacaoLegalOne:
     """Orquestra todo o fluxo de automação"""
 
@@ -164,7 +186,7 @@ class AutomacaoLegalOne:
     def __init__(self, config=None):
         self.config = {
             'outlook': {
-                'assunto_filtro': 'Cadastro de processos NOVOS LegalOne trabalhista',
+                'assunto_filtro': [cfg["assunto_filtro"] for cfg in FORMS_TIPOS],
                 'remetente_filtro': 'microsoft.com',
                 'intervalo_checagem': 300,
                 'fonte_email': os.getenv('EMAIL_SOURCE', 'auto'),
@@ -215,7 +237,20 @@ class AutomacaoLegalOne:
         else:
             self.email_mode = None
 
-        self.forms_extractor = FormsExtractor()
+        # Um extrator por natureza de Forms (trabalhista, cível, etc.)
+        # Cada um carrega seu próprio mapeador de campos.
+        self.forms_extractors = {
+            cfg["assunto_filtro"]: FormsExtractor(
+                modulo_mapeamento=cfg["modulo_mapeamento"],
+                counter_file=cfg.get("contador", "ultimo_processo.txt"),
+                resposta_minima=cfg.get("resposta_minima", 830),
+            )
+            for cfg in FORMS_TIPOS
+        }
+        # Extrator legado único, mantido para compatibilidade de chamadas externas
+        self.forms_extractor = self.forms_extractors.get(
+            FORMS_TIPOS[0]["assunto_filtro"], FormsExtractor()
+        )
 
         self.forms_extractor_enhanced = EnhancedFormsExtractor() if ENHANCED_DISPONIVEL else None
 
@@ -586,6 +621,12 @@ class AutomacaoLegalOne:
                 logger.info(f"Link: {email_data['forms_link']}")
             logger.info("="*80)
 
+            # Detecta qual Forms chegou (trabalhista, cível, etc.) pelo assunto
+            cfg_forms = detectar_tipo_forms_pelo_assunto(email_data.get('subject'))
+            modulo_mapeamento = cfg_forms['modulo_mapeamento']
+            natureza_default = cfg_forms['natureza_default']
+            logger.info(f"[FORMS] Natureza detectada pelo assunto: {natureza_default} ({modulo_mapeamento})")
+
             # Runner seguro: envia a corrotina ao event loop persistente para
             # que os objetos Playwright sobrevivam entre chamadas.
             def _run_coro_blocking(coro):
@@ -612,8 +653,14 @@ class AutomacaoLegalOne:
             else:
                 # Fluxo original: raspa o Forms via Playwright
                 logger.info("\n🔍 Extraindo dados do Forms...")
+                assunto_detectado = email_data.get('assunto_detectado') or cfg_forms['assunto_filtro']
+                forms_extractor = self.forms_extractors.get(
+                    assunto_detectado,
+                    self.forms_extractor,
+                )
+                logger.info(f"[FORMS] Usando extrator: {forms_extractor.modulo_mapeamento}")
                 dados_processo = _run_coro_blocking(
-                    self.forms_extractor.extrair_dados_forms(email_data['forms_link'])
+                    forms_extractor.extrair_dados_forms(email_data['forms_link'])
                 )
 
                 # Fallback: usa extrator enhanced se faltar CNJ ou dados principais
@@ -690,6 +737,10 @@ class AutomacaoLegalOne:
                     'Tipo da ação',
                     'Tipo da acao',
                 )
+            # Se o Forms não trouxe natureza, usa a natureza default da config
+            # pelo assunto do e-mail (trabalhista/cível/etc.)
+            if not dados_processo.get('natureza') and natureza_default:
+                dados_processo['natureza'] = natureza_default
             if not dados_processo.get('status_processo'):
                 dados_processo['status_processo'] = self._obter_outro_dado(
                     dados_processo,
@@ -805,9 +856,17 @@ class AutomacaoLegalOne:
             # do usuario, nao inferencia. A comparacao por string crua aqui casava
             # 'DECISÃO' contra o valor real 'DECISÕES' e nunca batia — decisao caia
             # em GENERICO e ia parar no fluxo de cadastro inicial.
+            # Escolhe o detector correto conforme o mapeador usado na extração.
+            if modulo_mapeamento == 'forms_mapping_civel' and CIVEL_DISPONIVEL:
+                detectar_tipo_cadastro = forms_mapping_civel.detectar_tipo_cadastro
+                tipo_tarefa_por_cadastro = forms_mapping_civel.TIPO_TAREFA_POR_CADASTRO
+            else:
+                detectar_tipo_cadastro = detectar_tipo_trabalhista
+                tipo_tarefa_por_cadastro = TIPO_TAREFA_TRABALHISTA
+
             canonico = detectar_tipo_cadastro(dados_processo.get('tipo_cadastro'))
             if canonico:
-                tipo_tarefa = TIPO_TAREFA_POR_CADASTRO[canonico]
+                tipo_tarefa = tipo_tarefa_por_cadastro[canonico]
                 dados_processo['tipo_cadastro_canonico'] = canonico
                 logger.info(f"\n[REGRAS] Identificado pelo Forms: {canonico} → {tipo_tarefa}")
             elif tipo_tarefa == "GENERICO":

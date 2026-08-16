@@ -61,7 +61,8 @@ class FormsExtractor:
     """Extrai dados de respostas do Microsoft Forms"""
 
     def __init__(self, state_file="browser_data/state.json", counter_file="ultimo_processo.txt",
-                 use_firecrawl=True, firecrawl_api_key=None):
+                 use_firecrawl=True, firecrawl_api_key=None, modulo_mapeamento="forms_mapping",
+                 resposta_minima=830):
         """
         Inicializa o extrator
 
@@ -70,12 +71,18 @@ class FormsExtractor:
             counter_file: Caminho para arquivo que armazena o último número processado
             use_firecrawl: Se True, tenta usar Firecrawl primeiro
             firecrawl_api_key: Chave da API Firecrawl (default: env FIRECRAWL_API_KEY)
+            modulo_mapeamento: Nome do módulo Python com `mapear_formulario`
+                (ex.: 'forms_mapping' ou 'forms_mapping_civel')
         """
         if firecrawl_api_key is None:
             firecrawl_api_key = os.getenv("FIRECRAWL_API_KEY", "")
         self.state_file = state_file
         self.counter_file = counter_file
+        # Piso da busca pela ultima resposta — por FORMULARIO (o civel esta na
+        # faixa 200, o trabalhista na 800).
+        self.resposta_minima = int(resposta_minima)
         self.use_firecrawl = use_firecrawl and FIRECRAWL_DISPONIVEL
+        self.modulo_mapeamento = modulo_mapeamento
 
         # --- Estado persistente do navegador (mantém Forms aberto) ---
         self._playwright = None
@@ -96,18 +103,38 @@ class FormsExtractor:
                 logger.warning(f"[INIT] Erro ao inicializar Firecrawl: {e}")
                 self.use_firecrawl = False
 
-        if not FORMS_MAPPING_DISPONIVEL:
-            logger.warning("[INIT] forms_mapping indisponível - mapeamento centralizado desativado")
+        # Carrega mapeador dinamicamente (trabalhista por padrão)
+        self._mapear_formulario = self._carregar_mapeador(modulo_mapeamento)
+
+    @staticmethod
+    def _carregar_mapeador(nome_modulo: str):
+        """Carrega dinamicamente o módulo de mapeamento do Forms."""
+        if not nome_modulo:
+            nome_modulo = "forms_mapping"
+        try:
+            modulo = __import__(nome_modulo, fromlist=["mapear_formulario"])
+            fn = getattr(modulo, "mapear_formulario", None)
+            if fn:
+                logger.info(f"[INIT] Mapeador de Forms carregado: {nome_modulo}")
+                return fn
+        except Exception as e:
+            logger.warning(f"[INIT] Não foi possível carregar {nome_modulo}: {e}")
+        # Fallback para forms_mapping global se disponível
+        if FORMS_MAPPING_DISPONIVEL:
+            logger.warning(f"[INIT] Usando forms_mapping como fallback")
+            return mapear_formulario
+        logger.warning("[INIT] Nenhum mapeador de Forms disponível")
+        return None
 
     def _aplicar_mapeamento_forms(self, dados_extraidos: dict) -> dict:
         """Aplica o mapeamento centralizado do Forms ao payload extraído."""
-        if not FORMS_MAPPING_DISPONIVEL or not mapear_formulario:
+        if not self._mapear_formulario:
             return dados_extraidos
 
         try:
-            resultado_mapeamento = mapear_formulario(dados_extraidos)
+            resultado_mapeamento = self._mapear_formulario(dados_extraidos)
         except Exception as e:
-            logger.warning(f"[MAPEAMENTO] Erro ao aplicar forms_mapping: {e}")
+            logger.warning(f"[MAPEAMENTO] Erro ao aplicar {self.modulo_mapeamento}: {e}")
             return dados_extraidos
 
         dados_extraidos['mapeamento_forms'] = resultado_mapeamento
@@ -115,8 +142,13 @@ class FormsExtractor:
         dados_extraidos['nao_mapeados_forms'] = resultado_mapeamento.get('nao_mapeados', [])
 
         campos_mapeados = resultado_mapeamento.get('campos') or {}
+        # 'tipo_cadastro' e' o que roteia decisao/recurso/arquivamento. A varredura
+        # do DOM pega a PRIMEIRA pergunta homonima ('Tipo de cadastro' = Processo)
+        # e com isso o roteador caia em GENERICO → cadastro inicial, criando de
+        # novo um processo que so' precisava ser alterado (14/08/2026, resposta 232).
+        sobrescreve = {'tipo_cadastro', 'tipo_entidade'}
         for campo, valor in campos_mapeados.items():
-            if valor and not dados_extraidos.get(campo):
+            if valor and (campo in sobrescreve or not dados_extraidos.get(campo)):
                 dados_extraidos[campo] = valor
 
         tipo_tarefa = resultado_mapeamento.get('tipo_tarefa_identificada')
@@ -124,7 +156,7 @@ class FormsExtractor:
             dados_extraidos['tipo_tarefa_identificada'] = tipo_tarefa
 
         outros = dados_extraidos.setdefault('outros_dados', {})
-        if resultado_mapeamento.get('tipo_cadastro') and not dados_extraidos.get('tipo_cadastro'):
+        if resultado_mapeamento.get('tipo_cadastro'):
             dados_extraidos['tipo_cadastro'] = resultado_mapeamento['tipo_cadastro']
 
         if campos_mapeados:
@@ -1013,7 +1045,7 @@ class FormsExtractor:
             await self._navegar_para_resposta(int(fixa))
             return int(fixa)
 
-        piso = int(os.getenv('FORMS_RESPOSTA_MINIMA', '830'))
+        piso = int(os.getenv('FORMS_RESPOSTA_MINIMA', '') or self.resposta_minima)
         ultimo_salvo = max(self.ler_ultimo_numero() or 0, piso)
         logger.info(f"[NAV] 🔄 Pulando para resposta #{ultimo_salvo} (último processado)...")
         await self._navegar_para_resposta(ultimo_salvo)
@@ -1108,8 +1140,8 @@ class FormsExtractor:
             except Exception as e:
                 logger.warning(f"[COUNTER] Erro ao ler arquivo de contador: {e}")
 
-        logger.info("[COUNTER] Arquivo de contador nao encontrado, iniciando em 639")
-        return 639
+        logger.info(f"[COUNTER] Arquivo de contador nao encontrado, iniciando em {self.resposta_minima}")
+        return self.resposta_minima
 
     def salvar_proximo_numero(self, numero_atual):
         """Salva o numero da ULTIMA resposta lida (nao 'ultima + 1').

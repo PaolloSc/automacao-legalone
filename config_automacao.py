@@ -1,4 +1,4 @@
-﻿"""
+"""
 Configuração para Automação LegalOne
 """
 import os
@@ -9,6 +9,30 @@ OUTLOOK_CONFIG = {
     'remetente_filtro': 'microsoft.com',  # Emails do Forms vem de @microsoft.com
     'intervalo_checagem': 300,  # 5 minutos
 }
+
+# ==================== FORMS MULTINATUREZA ====================
+# Cada entrada liga o assunto do e-mail de notificação ao mapeador correto.
+# O fluxo principal usa isso para saber se a resposta veio do Forms trabalhista,
+# cível, etc. 'assunto_filtro' também é usado no monitor Graph/Desktop.
+FORMS_TIPOS = (
+    {
+        'assunto_filtro': 'Cadastro de processos NOVOS LegalOne trabalhista',
+        'modulo_mapeamento': 'forms_mapping',
+        'natureza_default': 'Trabalhista',
+        # Cada formulário tem sua própria numeração de respostas: contador
+        # compartilhado fazia o cível pular para a faixa 830+ do trabalhista,
+        # onde o Forms mostra resposta VAZIA em vez de recusar o número.
+        'contador': 'ultimo_processo.txt',
+        'resposta_minima': 830,
+    },
+    {
+        'assunto_filtro': 'Nova resposta de Cível - cadastro LegalOne',
+        'modulo_mapeamento': 'forms_mapping_civel',
+        'natureza_default': 'Cível',
+        'contador': 'ultimo_processo_civel.txt',
+        'resposta_minima': 232,  # última resposta do Forms cível em 14/08/2026
+    },
+)
 
 # ==================== LEGALONE ====================
 # Credenciais lidas de variáveis de ambiente (ou edite os valores de fallback)
