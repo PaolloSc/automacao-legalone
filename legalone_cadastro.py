@@ -7557,7 +7557,13 @@ class LegalOneCadastro:
 
     def _tokens_identidade(self, texto: str) -> set[str]:
         palavras = re.findall(r'\w+', _normalizar_pedido(texto or ''))
-        return {p for p in palavras if p not in self._PALAVRAS_GENERICAS}
+        tokens = {p for p in palavras if p not in self._PALAVRAS_GENERICAS}
+        # Plural simples do pt-BR ("Agravantes" no Forms x "Agravante" no
+        # catalogo, semelhanca 0.95): sem isso o veto de identidade rejeitava
+        # a opcao certa so' por causa do 's' final, 100% das vezes que o
+        # proprio LegalOne nao preenchia o campo sozinho antes (17/08/2026).
+        tokens |= {p[:-1] for p in tokens if len(p) > 3 and p.endswith('s')}
+        return tokens
 
     def _compartilha_identidade(self, candidatos: list[str], texto_opcao: str) -> bool:
         """Veta opcao que nao tem NENHUMA palavra identificadora em comum.
@@ -7623,6 +7629,16 @@ class LegalOneCadastro:
                 if s > score and self._compartilha_identidade(candidatos, texto):
                     alvo, texto_alvo, score = li, texto, s
             if alvo is None:
+                # Mesmo risco do score baixo: _abrir_lista_lookup ja' digitou
+                # texto no campo pra abrir a lista, e sem limpar aqui ele fica
+                # orfao (Id vazio) — commitava "Agra" sem Id e so' explodia
+                # depois, no POST, com erro de campo obrigatorio sem relacao
+                # aparente (recurso 233, 17/08/2026).
+                logger.warning(
+                    f"   ⚠ {id_text}: nenhuma opcao da lista bate com {valor!r} "
+                    f"({len(opcoes)} opcao(oes) vista(s))"
+                )
+                self._limpar_lookup(id_text, id_hidden)
                 return False
             if score < self.SEMELHANCA_MINIMA_LOOKUP:
                 logger.warning(
@@ -11081,9 +11097,13 @@ class LegalOneCadastro:
         re_tipo = re.compile(r'\b(êxito|exito|perda)\b', re.IGNORECASE)
         re_grau = re.compile(r'\b(possível|possivel|provável|provavel|remota|remoto)\b', re.IGNORECASE)
 
-        # Separar linhas: por \n, ; ou ponto-e-vírgula
+        # Separar linhas: por \n, ; ou por marcador "- Maiuscula" (Forms as
+        # vezes manda os pedidos numa unica linha com "- " como bullet em vez
+        # de quebra de linha — resposta 233 do civel, 17/08/2026). O grau
+        # ("- possível"/"- provável") vem em minúsculo logo após "chance de",
+        # entao exigir maiuscula depois do hífen evita cortar ali.
         raw = str(texto).strip()
-        linhas = re.split(r'[\n;]+', raw)
+        linhas = re.split(r'[\n;]+|(?:^|(?<=\s))-\s+(?=[A-ZÀ-Ü])', raw)
         linhas = [l.strip() for l in linhas if l.strip()]
 
         # O Copilot pode agrupar pedidos diferentes numa única frase. Expande
