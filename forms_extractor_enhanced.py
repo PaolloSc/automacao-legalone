@@ -3,6 +3,7 @@ Forms Extractor aprimorado com BeautifulSoup e Spacy
 """
 
 import asyncio
+import os
 from typing import Dict, Optional
 from datetime import datetime
 import re
@@ -16,6 +17,9 @@ import logging
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
+
+# Mesma variavel usada em forms_extractor.py: FORMS_HEADLESS=1 roda sem janela.
+FORMS_HEADLESS = os.getenv("FORMS_HEADLESS", "0").strip().lower() in ("1", "true", "yes", "y", "sim")
 
 # Carregar modelo NLP para português
 try:
@@ -53,7 +57,7 @@ class EnhancedFormsExtractor:
     async def extract_with_playwright_soup(self, url: str) -> Dict:
         """Combina Playwright com BeautifulSoup"""
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=False)
+            browser = await p.chromium.launch(headless=FORMS_HEADLESS)
             page = await browser.new_page()
 
             await page.goto(url)

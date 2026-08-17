@@ -13,8 +13,12 @@ RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, RAIZ)
 os.chdir(RAIZ)
 
-NUMERO = sys.argv[1] if len(sys.argv) > 1 else "232"
-os.environ["FORMS_RESPOSTA_FIXA"] = NUMERO
+# "latest" (ou nenhum argumento) deixa o extrator andar ate' a ultima resposta
+# de verdade em vez de travar num numero fixo.
+_arg = next((a for a in sys.argv[1:] if not a.startswith("--")), "latest")
+NUMERO = _arg
+if _arg != "latest":
+    os.environ["FORMS_RESPOSTA_FIXA"] = _arg
 
 from dotenv import load_dotenv  # noqa: E402
 

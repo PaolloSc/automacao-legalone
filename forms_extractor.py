@@ -27,6 +27,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 VERBOSE_FORMS_LOGS = os.getenv("FORMS_VERBOSE_LOGS", "0").strip().lower() in ("1", "true", "yes", "y")
+# FORMS_HEADLESS=1 roda sem janela (servidor/VM). Sem a variavel mantem o
+# comportamento visual de sempre, igual ao LEGALONE_HEADLESS do legalone_cadastro.py.
+FORMS_HEADLESS = os.getenv("FORMS_HEADLESS", "0").strip().lower() in ("1", "true", "yes", "y", "sim")
 
 # Scrapling opcional (fallback de captura rápida de texto)
 try:
@@ -587,7 +590,7 @@ class FormsExtractor:
 
         async def _launch_browser():
             self._browser = await self._playwright.chromium.launch(
-                headless=False,
+                headless=FORMS_HEADLESS,
                 args=['--disable-blink-features=AutomationControlled']
             )
 
