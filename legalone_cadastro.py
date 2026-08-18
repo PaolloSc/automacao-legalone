@@ -233,7 +233,7 @@ PASSWORD = os.getenv('LEGALONE_PASSWORD', '')
 class LegalOneCadastro:
     """Gerencia login e cadastro de processos no LegalOne"""
 
-    def __init__(self, username=USERNAME, password=PASSWORD, use_agentql: bool | None = None, agentql_api_key: str | None = None):
+    def __init__(self, username=USERNAME, password=PASSWORD, use_agentql: bool | None = None, agentql_api_key: str | None = None, profile_dir_suffix: str = ""):
         self.username = username
         self.password = password
         if use_agentql is None:
@@ -254,8 +254,13 @@ class LegalOneCadastro:
             logger.warning("[AGENTQL] Ativo, mas sem API key. Defina AGENTQL_API_KEY.")
         elif self.use_agentql:
             logger.info("[AGENTQL] Ativo para análise de contexto.")
-        self.user_data_dir = os.path.join(os.getcwd(), "browser_data")
-        self.fallback_user_data_dir = os.path.join(os.getcwd(), "browser_data_fallback")
+        # Sufixo isola o perfil do Chrome por processo. Dois processos (o
+        # monitor de Outlook e a API de peticoes) apontavam pro mesmo
+        # "browser_data" e brigavam pelo lock do perfil, derrubando o
+        # navegador um do outro no meio de um cadastro (17/08/2026).
+        _sufixo = profile_dir_suffix or os.getenv("LEGALONE_PROFILE_SUFFIX", "")
+        self.user_data_dir = os.path.join(os.getcwd(), f"browser_data{_sufixo}")
+        self.fallback_user_data_dir = os.path.join(os.getcwd(), f"browser_data_fallback{_sufixo}")
         self.state_file = os.path.join(self.user_data_dir, "legalone_state.json")
         os.makedirs(self.user_data_dir, exist_ok=True)
         os.makedirs(self.fallback_user_data_dir, exist_ok=True)
@@ -881,11 +886,19 @@ class LegalOneCadastro:
         }
     """
 
+    def _ollama_disponivel(self) -> bool:
+        base = os.getenv('OLLAMA_VISION_URL', 'http://localhost:11434/v1/chat/completions')
+        base = base.rsplit('/v1/', 1)[0]
+        try:
+            return requests.get(base, timeout=2).status_code == 200
+        except Exception:
+            return False
+
     def _gemini_vision(self, prompt, png_bytes):
         """Manda screenshot + prompt para o Gemini (visao) e devolve o texto."""
         key = os.getenv('GOOGLE_API_KEY') or os.getenv('GEMINI_API_KEY')
         if not key:
-            return None
+            return self._ollama_vision(prompt, png_bytes)
         model = os.getenv('LEGALONE_VISION_MODEL', 'gemini-2.5-flash')
         url = ("https://generativelanguage.googleapis.com/v1beta/models/"
                + model + ":generateContent?key=" + key)
@@ -901,9 +914,39 @@ class LegalOneCadastro:
             return None
         if r.status_code != 200:
             logger.warning("   [VISAO] Gemini " + str(r.status_code) + ": " + r.text[:120])
-            return self._openai_vision(prompt, png_bytes)  # reserva quando Gemini estoura cota
+            return self._ollama_vision(prompt, png_bytes)  # reserva quando Gemini estoura cota
         try:
             return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+        except Exception:
+            return self._ollama_vision(prompt, png_bytes)
+
+    def _ollama_vision(self, prompt, png_bytes):
+        """Reserva de visao: Ollama local (moondream, open-source, sem custo
+        de API) quando o Gemini falha/estoura cota. Cai pro GPT-4o so' se o
+        Ollama tambem nao responder (18/08/2026 — OpenAI sem credito e' o
+        motivo original de trocar a ordem)."""
+        url = os.getenv('OLLAMA_VISION_URL', 'http://localhost:11434/v1/chat/completions')
+        modelo = os.getenv('OLLAMA_VISION_MODEL', 'moondream')
+        b64 = base64.b64encode(png_bytes).decode()
+        body = {
+            "model": modelo,
+            "max_tokens": 300,
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64," + b64}},
+            ]}],
+        }
+        try:
+            r = requests.post(url, json=body, timeout=60)
+        except Exception as e:
+            logger.warning("   [VISAO] Ollama erro de rede: " + str(e)[:80])
+            return self._openai_vision(prompt, png_bytes)
+        if r.status_code != 200:
+            logger.warning("   [VISAO] Ollama " + str(r.status_code) + ": " + r.text[:120])
+            return self._openai_vision(prompt, png_bytes)
+        try:
+            logger.info("   [VISAO] usando reserva Ollama local (moondream)")
+            return r.json()["choices"][0]["message"]["content"]
         except Exception:
             return self._openai_vision(prompt, png_bytes)
 
@@ -939,8 +982,11 @@ class LegalOneCadastro:
     def _agente_visual(self, objetivo, max_passos=5):
         """Agente de VISAO estilo Claude-in-Chrome: marca clicaveis com numeros,
         tira screenshot, Gemini decide qual numero clicar, e clica. Repete ate concluir."""
-        if not (os.getenv('GOOGLE_API_KEY') or os.getenv('GEMINI_API_KEY')):
-            logger.warning("   [VISAO] Sem GOOGLE_API_KEY - agente visual indisponivel")
+        # Ollama local nao precisa de chave — so' checa a chave do
+        # Gemini se o Ollama nao estiver de pe' (18/08/2026).
+        tem_gemini = bool(os.getenv('GOOGLE_API_KEY') or os.getenv('GEMINI_API_KEY'))
+        if not tem_gemini and not self._ollama_disponivel():
+            logger.warning("   [VISAO] Sem GOOGLE_API_KEY e sem Ollama local - agente visual indisponivel")
             return False
         for passo in range(max_passos):
             try:
@@ -8382,7 +8428,7 @@ class LegalOneCadastro:
     # peticao quase nunca traz (o Copilot devolve 'NAO LOCALIZADO' neles).
     _DATAJUD_CAMPOS = ('valor_causa', 'data_distribuicao',
                        'nome_vara_turma', 'tipo_classe_recurso', 'risco',
-                       'justica', 'assunto_cnj')
+                       'justica', 'assunto_cnj', 'orgao')
 
     # Segmento do CNJ (digito J) -> 'Justica (CNJ)' na ficha. Res. CNJ 65/2008.
     # Nao precisa de consulta: o proprio numero do processo diz.
@@ -8402,6 +8448,58 @@ class LegalOneCadastro:
     def _justica_do_cnj(cls, cnj) -> str | None:
         d = re.sub(r'\D', '', str(cnj or ''))
         return cls._JUSTICA_POR_SEGMENTO.get(d[13]) if len(d) == 20 else None
+
+    # UF -> nome por extenso, na mesma ordem/cobertura do alias_do_cnj
+    # (jurimetria_datajud._TR_ESTADUAL). So' os 27 usados pra resolver Justica
+    # Estadual — Eleitoral/Militar ficam de fora, igual la'.
+    _NOME_ESTADO = {
+        'ac': 'Acre', 'al': 'Alagoas', 'ap': 'Amapá', 'am': 'Amazonas',
+        'ba': 'Bahia', 'ce': 'Ceará', 'dft': 'Distrito Federal e Territórios',
+        'es': 'Espírito Santo', 'go': 'Goiás', 'ma': 'Maranhão',
+        'mt': 'Mato Grosso', 'ms': 'Mato Grosso do Sul', 'mg': 'Minas Gerais',
+        'pa': 'Pará', 'pb': 'Paraíba', 'pr': 'Paraná', 'pe': 'Pernambuco',
+        'pi': 'Piauí', 'rj': 'Rio de Janeiro', 'rn': 'Rio Grande do Norte',
+        'rs': 'Rio Grande do Sul', 'ro': 'Rondônia', 'rr': 'Roraima',
+        'sc': 'Santa Catarina', 'se': 'Sergipe', 'sp': 'São Paulo',
+        'to': 'Tocantins',
+    }
+
+    @classmethod
+    def _orgao_do_cnj(cls, cnj) -> str | None:
+        """Nome do tribunal por extenso, pro catalogo 'Orgao' do LegalOne.
+
+        Deriva do proprio numero do CNJ (segmento J.TR), sem depender de um
+        hit do DataJud existir. Validado ao vivo contra o catalogo real
+        (17/08/2026): TJs sao sempre 'Tribunal de Justica do Estado de
+        <Estado>' e TRTs sempre 'Tribunal Regional do Trabalho da <N>a
+        Regiao' — nenhuma excecao nos 9 tribunais testados.
+        """
+        d = re.sub(r'\D', '', str(cnj or ''))
+        if len(d) == 20 and d[13] == '5' and d[14:16] == '00':
+            return 'Tribunal Superior do Trabalho'
+        if len(d) == 20 and d[13] == '1' and d[14:16] == '00':
+            return 'Supremo Tribunal Federal'
+        try:
+            from jurimetria_datajud import alias_do_cnj
+            alias = alias_do_cnj(str(cnj))
+        except Exception:
+            return None
+        if not alias:
+            return None
+        if alias == 'stj':
+            return 'Superior Tribunal de Justiça'
+        m = re.match(r'^trt(\d+)$', alias)
+        if m:
+            return f'Tribunal Regional do Trabalho da {m.group(1)}ª Região'
+        m = re.match(r'^trf(\d+)$', alias)
+        if m:
+            return f'Tribunal Regional Federal da {m.group(1)}ª Região'
+        m = re.match(r'^tj(\w+)$', alias)
+        if m:
+            estado = cls._NOME_ESTADO.get(m.group(1))
+            if estado:
+                return f'Tribunal de Justiça do Estado de {estado}'
+        return None
 
     @staticmethod
     def _dj_dict(valor) -> dict:
@@ -8476,13 +8574,15 @@ class LegalOneCadastro:
             return
         if not hits:
             logger.info(f"   [DATAJUD] sem hits para {cnj}")
-            return
-        src = self._dj_dict(hits[0])
+        # 'justica' e 'orgao' vem so' do numero do CNJ (regex, sem rede) —
+        # preenchem mesmo sem hit do DataJud, diferente do resto da capa.
+        src = self._dj_dict(hits[0]) if hits else {}
         db = self._dj_dict(src.get('dadosBasicos'))
         risco, detalhe_risco = self._dj_risco(src, cnj)
         capa = {
             'risco': risco,
             'justica': self._justica_do_cnj(cnj),
+            'orgao': self._orgao_do_cnj(cnj),
             'valor_causa': self._dj_valor_causa(src, db),
             'data_distribuicao': self._dj_data_br(
                 src.get('dataAjuizamento') or db.get('dataAjuizamento')),
@@ -9137,6 +9237,7 @@ class LegalOneCadastro:
             return self._obter_de_forms(dados, *campos)
 
         cnj_recurso = self._valor_limpo(dados.get('cnj'))
+        logger.info(f"[DEBUG-recursohang] entrou em _preencher_novo_recurso cnj={cnj_recurso!r}")
 
         tipo = (obter('tipo_processo') or 'Judicial').strip().lower()
         radio = {
@@ -9145,10 +9246,14 @@ class LegalOneCadastro:
             'arbitral': 'tipo-relacionamento-processo-arbitral',
         }.get(tipo)
         self._checar_vinculo('abertura da tela')
+        logger.info(f"[DEBUG-recursohang] antes do check radio={radio!r}")
         if radio:
             try:
+                _t0 = time.time()
                 self.page.check(f'#{radio}')
+                logger.info(f"[DEBUG-recursohang] check ok em {time.time()-_t0:.1f}s")
             except Exception as e:
+                logger.warning(f"[DEBUG-recursohang] check falhou apos {time.time()-_t0:.1f}s: {type(e).__name__}")
                 logger.warning(f"   ⚠ tipo de procedimento ({tipo}): {e}")
             self._checar_vinculo(f'radio tipo={tipo}')
 
