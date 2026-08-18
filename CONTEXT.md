@@ -92,3 +92,12 @@ MESMO guid com `-` original (`_base_vinculo()` trata isso). Pedido
 "Liberação de penhora de imóveis" vira "Penhora de Imóvel" via
 `PEDIDOS_ALIASES_CATALOGO`, reaproveitando o catálogo existente em vez de
 tentar criar um pedido novo.
+
+**Copilot Studio atualizado e publicado em 18/08/2026** com essa mesma
+regra (`docs/COPILOT_AGENTE.md`) — `tipo_vinculo`/`vinculo` viraram
+Campos Comuns, aplica pra qualquer área (não só cível), já que o pedido
+de "penhora" é compartilhado entre trabalhista e cível. Achado
+importante nessa edição: o prompt vivo do Copilot **não tem mais** as
+seções `### RECURSO`/`### ARQUIVAMENTO COMPLETO` (cortadas em algum
+momento pelo limite de 8.000 caracteres, doc desatualizado) — pendente
+de correção numa sessão própria.

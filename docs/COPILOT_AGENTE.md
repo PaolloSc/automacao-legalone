@@ -20,7 +20,7 @@ Advogado → Copilot Studio → Power Automate flow → Email → outlook_monito
 | ID | `6513c533-e257-f111-a825-002248e10297` |
 | Tenant | `b3308b02-3160-463b-8b8c-cb0f556f4e77` (CARVALHO & FURTADO) |
 | Modelo | Claude Opus 4.8 |
-| Status | Publicado (05/08/2026) |
+| Status | Publicado (18/08/2026) |
 
 URL direto:
 ```
@@ -67,10 +67,41 @@ contingencia, probabilidade, grau_probabilidade, risco,
 contrato_honorarios, incluir_relatorio, funcao_rcte, outros_envolvidos,
 advogado, procedimento, cidade_comarca, valor_causa, objetos,
 data_distribuicao, pedidos, vinculo_trabalhista, descricao_pedidos,
-responsabilidade, data_julgamento, data_citacao, redirecionamento, posicao
+responsabilidade, data_julgamento, data_citacao, redirecionamento, posicao,
+tipo_vinculo, vinculo
+
+> **Adicionado em 18/08/2026 (publicado).** `tipo_vinculo`/`vinculo` — pra
+> Embargos de Terceiro (qualquer área, não só cível): a peça pede
+> liberação de bem penhorado num processo antigo. Regra no prompt vivo:
+> peça de Embargos de Terceiro sobre bem penhorado → `tipo_vinculo` =
+> "Embargos de terceiros", `vinculo` = CNJ do processo antigo onde
+> ocorreu a penhora. Pedido de "liberação de penhora de imóveis" (ou
+> equivalente) = pedido **"Penhora de Imóvel"** (já existe no catálogo
+> do LegalOne — nunca invente pedido novo). Ver
+> `docs/spec-embargos-de-terceiro.md` pro spec completo do lado do bot
+> (`legalone_cadastro.py::_preencher_vinculo_embargos_terceiro`).
+> Coube no orçamento cortando dois trechos redundantes do prompt (um
+> exemplo ERRADO/CERTO cujo texto da regra já era inequívoco, e uma
+> frase-resumo que repetia a lógica de contingência já detalhada acima
+> dela) — nenhuma regra em si foi removida, só reforços redundantes.
+> Prompt foi de 7.974 para 7.989/8.000 caracteres.
 
 ## Campos por Tipo
 (espelha `pacote_automacao_legalone/forms_mapping.py` — ver `MAPEAMENTO_POR_TIPO`)
+
+> **⚠ Divergência achada em 18/08/2026.** As seções `### RECURSO` e
+> `### ARQUIVAMENTO COMPLETO` abaixo **não existem mais no prompt ao
+> vivo** — só a palavra "RECURSO" sobrevive, na lista de tipos de
+> cadastro (`## Entrada de Dados`), sem nenhum campo extra associado.
+> Provavelmente foram cortadas em algum momento pra caber no limite de
+> 8.000 caracteres e este doc não foi atualizado. Efeito prático: hoje,
+> uma petição de Recurso mandada pelo Copilot **não tem `orgao`,
+> `tipo_classe_recurso`, `classificacao_pedidos_recurso`,
+> `numero_turma` etc. extraídos** — exatamente os campos que
+> `_fluxo_recurso_civel` (`legalone_cadastro.py`) precisa. Ainda não
+> corrigido — decisão explícita de escopo em 18/08/2026 (o pedido daquela
+> sessão era só Embargos de Terceiro); precisa de uma sessão própria pra
+> readicionar essas seções com um corte maior/mais cuidadoso no prompt.
 
 ### CADASTRO INICIAL
 Sem campos extras — usa somente os Campos Comuns acima
