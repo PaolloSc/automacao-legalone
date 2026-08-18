@@ -77,3 +77,18 @@ usa `deepseek-chat` especificamente por isso (`_chat_model_langchain` em
 `claude_brain.py`). Escopo deliberadamente pequeno: só
 `classificar_processo` mudou; `send_message`/`ask` (usados pelo Guardian)
 continuam no cliente HTTP cru de sempre.
+
+## Embargos de terceiro (vínculo + pedido)
+
+Spec completo em `docs/spec-embargos-de-terceiro.md`. Resumo: Cadastro
+Inicial cível com "Tipo de vínculo" = "Embargos de terceiros" agora
+preenche a seção "Vínculos" (`_preencher_vinculo_embargos_terceiro`),
+ligando ao processo antigo informado no Forms — restrito só a esse tipo
+de vínculo por decisão explícita (os outros tipos da mesma lista,
+Cautelar/Conexo/Execução/etc., continuam sem tratamento). A seção
+"Vínculos" é uma linha por GUID como Pedidos/Assuntos, com a pegadinha de
+que os `<input>` usam o guid com `_` e o `<select>` `VinculadoAId` usa o
+MESMO guid com `-` original (`_base_vinculo()` trata isso). Pedido
+"Liberação de penhora de imóveis" vira "Penhora de Imóvel" via
+`PEDIDOS_ALIASES_CATALOGO`, reaproveitando o catálogo existente em vez de
+tentar criar um pedido novo.

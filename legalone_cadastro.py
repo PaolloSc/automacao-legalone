@@ -111,6 +111,10 @@ PEDIDOS_ALIASES_CATALOGO = {
     "seguro desemprego": "Parcelas Seguro-desemprego",
     "liberacao de guias": "Entrega das guias CD/SD",
     "indenizacao": "Indenização adicional",
+    # Embargos de terceiro pede "liberacao de penhora de imoveis" — o
+    # catalogo do LegalOne ja tem "Penhora de Imóvel"; reaproveita em vez
+    # de tentar criar um pedido novo que nao existe no lookup (18/08/2026).
+    "liberacao de penhora de imoveis": "Penhora de Imóvel",
 }
 
 
@@ -8456,10 +8460,107 @@ class LegalOneCadastro:
             ok += n_ok
             falhas.extend(n_falhas)
 
+        # Embargos de terceiro: unico tipo de vinculo tratado por decisao
+        # explicita de escopo (18/08/2026) — os outros da mesma lista
+        # (Cautelar, Conexo, Execucao etc.) continuam sem tratamento.
+        tipo_vinculo = obter('tipo_vinculo')
+        if tipo_vinculo and _normalizar_pedido(tipo_vinculo) == _normalizar_pedido(
+                'Embargos de terceiros'):
+            registrar('Vinculo (Embargos de terceiros)',
+                      self._preencher_vinculo_embargos_terceiro(obter))
+
         logger.info(
             f"   [FICHA] {ok} campo(s) preenchido(s); falhas: {falhas or 'nenhuma'}"
         )
         return ok, falhas
+
+    def _clicar_adicionar_vinculo(self) -> bool:
+        seletores = [
+            'a:has-text("Adicionar vínculo")',
+            'button:has-text("Adicionar vínculo")',
+            '[id*="add_vinculo"]',
+            '[id*="addVinculo"]',
+        ]
+        for sel in seletores:
+            try:
+                btn = self.page.wait_for_selector(sel, state='visible', timeout=3000)
+                if btn:
+                    btn.scroll_into_view_if_needed()
+                    btn.click()
+                    time.sleep(1.0)
+                    logger.info(f"   + 'Adicionar vínculo' clicado via: {sel}")
+                    return True
+            except Exception:
+                continue
+        try:
+            clicou = self.page.evaluate("""
+                () => {
+                    const btn = Array.from(document.querySelectorAll('button, a'))
+                        .find(b => (b.innerText || '').toLowerCase().includes('adicionar vínculo'));
+                    if (btn) { btn.scrollIntoView({block:'center'}); btn.click(); return true; }
+                    return false;
+                }
+            """)
+            if clicou:
+                time.sleep(1.0)
+                logger.info("   + 'Adicionar vínculo' clicado via JS fallback")
+                return True
+        except Exception:
+            pass
+        logger.warning("   ⚠ Não foi possível clicar em 'Adicionar vínculo'")
+        return False
+
+    def _base_vinculo(self) -> tuple[str, str]:
+        """(base_input, base_select) da ULTIMA linha de vinculo adicionada.
+
+        Os inputs (TipoVinculoText/Id, ProcessoVinculoText/Id) usam o GUID
+        da linha com '_' no lugar de '-'; o <select> VinculadoAId usa o
+        MESMO guid com '-' original — inconsistencia ja vista nos ids de
+        Pedidos/Assuntos (GUID por linha, 18/08/2026).
+        """
+        try:
+            ids = self.page.evaluate(
+                """() => Array.from(document.querySelectorAll(
+                    'input[id^="Vinculos_"][id$="__TipoVinculoId"]'
+                )).map(el => el.id)"""
+            ) or []
+        except Exception:
+            return '', ''
+        if not ids:
+            return '', ''
+        base_input = re.sub(r'__TipoVinculoId$', '', ids[-1])
+        guid = base_input[len('Vinculos_'):]
+        base_select = 'Vinculos_' + guid.replace('_', '-')
+        return base_input, base_select
+
+    def _preencher_vinculo_embargos_terceiro(self, obter) -> bool:
+        """Vinculo 'Embargos de terceiros' no Cadastro Inicial cível: liga
+        o processo novo (autos apartados) ao processo antigo informado no
+        Forms. So' preenchimento de campo na secao 'Vínculos' — NAO busca
+        nem reabre a pasta do processo antigo (diferente do Recurso, que
+        precisa disso pra herdar dados da origem); confirmado por decisao
+        explicita de escopo do spec de Embargos de terceiro (18/08/2026).
+        """
+        processo_antigo = self._valor_limpo(obter('vinculo'))
+        if not processo_antigo:
+            logger.warning(
+                "   ⚠ Embargos de terceiro sem CNJ do processo antigo (campo 'vinculo' vazio)")
+            return False
+        if not self._clicar_adicionar_vinculo():
+            return False
+        base_input, base_select = self._base_vinculo()
+        if not base_input:
+            logger.warning("   ⚠ Vínculo: linha adicionada mas campos não apareceram no DOM")
+            return False
+        ok_tipo = self._preencher_lookup_por_id(
+            f'{base_input}__TipoVinculoText', f'{base_input}__TipoVinculoId',
+            'Embargos de terceiros')
+        ok_alvo = self._selecionar_por_id(
+            f'{base_select}__VinculadoAId', '0', 'Vinculado a (Processo)')
+        ok_processo = self._preencher_lookup_por_id(
+            f'{base_input}__ProcessoVinculoText', f'{base_input}__ProcessoVinculoId',
+            processo_antigo)
+        return ok_tipo and ok_alvo and ok_processo
 
     # Campos que o DataJud sabe responder — sao os da capa de rosto, que a
     # peticao quase nunca traz (o Copilot devolve 'NAO LOCALIZADO' neles).
