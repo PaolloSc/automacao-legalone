@@ -52,6 +52,25 @@ REDIRECT_URI = f"http://localhost:{CALLBACK_PORT}/callback"
 
 DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 
+try:
+    from pydantic import BaseModel, Field
+
+    class ClassificacaoProcesso(BaseModel):
+        """Schema de classificar_processo — mesmos campos do dict legado,
+        agora garantidos pelo tool-calling do LangChain (18/08/2026): o
+        parse manual de ```json``` na resposta em texto livre falhava
+        silenciosamente e caia num fallback generico."""
+
+        tipo_tarefa: str = Field(
+            description="CADASTRO_INICIAL, RECURSO, DECISAO, ARQUIVAMENTO ou ATUALIZACAO")
+        prioridade: str = Field(description="ALTA, MEDIA ou BAIXA")
+        classificacao: str = Field(description="Breve descricao da classificacao")
+        campos_obrigatorios_faltando: list[str] = Field(default_factory=list)
+        recomendacoes: list[str] = Field(default_factory=list)
+        confianca: float = Field(description="0.0 a 1.0")
+except ImportError:
+    ClassificacaoProcesso = None  # langchain/pydantic nao instalado — usa o parse legado
+
 
 def _find_auth_file() -> Optional[Path]:
     """Encontra auth.json existente."""
@@ -440,7 +459,62 @@ class ClaudeBrain:
             block.get("text", "") for block in content if block.get("type") == "text"
         )
 
+    def _chat_model_langchain(self):
+        """Modelo LangChain equivalente ao provedor ja' escolhido no __init__.
+
+        So' cobre os dois casos com chave estatica (DeepSeek e Anthropic
+        direto) — o fluxo OAuth (sem DEEPSEEK_API_KEY/ANTHROPIC_API_KEY) nao
+        tem integracao pronta no LangChain pra o access_token com refresh
+        que essa classe implementa; nesse caso quem chama cai pro parse
+        legado (18/08/2026).
+        """
+        if self._deepseek_key:
+            from langchain_deepseek import ChatDeepSeek
+            # deepseek-v4-pro (default de self.model) roda em "thinking mode",
+            # que a API do DeepSeek recusa com tool_choice forcado — structured
+            # output exige isso. deepseek-chat e' o modelo sem thinking,
+            # confirmado ao vivo que aceita tool-calling (18/08/2026).
+            modelo_structured = os.getenv("DEEPSEEK_MODEL_STRUCTURED", "deepseek-chat")
+            return ChatDeepSeek(model=modelo_structured, api_key=self._deepseek_key,
+                                 temperature=self.temperature)
+        if self._api_key:
+            from langchain_anthropic import ChatAnthropic
+            return ChatAnthropic(model=self.model, api_key=self._api_key,
+                                  temperature=self.temperature)
+        return None
+
     def classificar_processo(self, dados_processo: dict) -> dict:
+        if ClassificacaoProcesso is not None:
+            try:
+                modelo = self._chat_model_langchain()
+            except ImportError:
+                modelo = None
+            if modelo is not None:
+                return self._classificar_processo_structured(modelo, dados_processo)
+        return self._classificar_processo_legado(dados_processo)
+
+    def _classificar_processo_structured(self, modelo, dados_processo: dict) -> dict:
+        system = ("Voce e um assistente juridico especializado em direito do "
+                   "trabalho brasileiro. Classifique processos e recomende "
+                   "acoes para cadastro no sistema LegalOne.")
+        prompt = (
+            "Analise os seguintes dados de processo extraidos de um "
+            "formulario Microsoft Forms e classifique para cadastro no "
+            "LegalOne:\n\n```json\n"
+            + json.dumps(dados_processo, ensure_ascii=False, indent=2, default=str)
+            + "\n```\n\nClassifique o tipo de tarefa, prioridade, e liste "
+              "campos obrigatorios que estao faltando."
+        )
+        try:
+            estruturado = modelo.with_structured_output(ClassificacaoProcesso).invoke(
+                [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
+            )
+            return estruturado.model_dump()
+        except Exception as e:
+            logger.warning(f"[CLAUDE BRAIN] Structured output falhou, usando parse legado: {e}")
+            return self._classificar_processo_legado(dados_processo)
+
+    def _classificar_processo_legado(self, dados_processo: dict) -> dict:
         system = """Voce e um assistente juridico especializado em direito do trabalho brasileiro.
 Sua funcao e classificar processos e recomendar acoes para cadastro no sistema LegalOne.
 

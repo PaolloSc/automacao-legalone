@@ -19,3 +19,8 @@ azure-ai-documentintelligence>=1.0
 # Testes — mock de HTTP (sem rede real)
 responses>=0.25
 pytest>=8.0
+
+# Structured output do claude_brain.py (classificar_processo) — DeepSeek e Anthropic
+langchain-core>=1.5
+langchain-deepseek>=1.1
+langchain-anthropic>=1.5

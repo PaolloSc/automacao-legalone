@@ -57,3 +57,20 @@ Visual Guardian
 (visual_guardian.py), que usa claude_brain.py/Claude Sonnet pra
 recuperação de erros de cadastro — os dois sistemas de visão são
 independentes.
+
+## Structured output do claude_brain.py (LangChain)
+
+`ClaudeBrain.classificar_processo` tinha parse manual de JSON dentro de
+bloco ```` ```json ```` na resposta em texto livre — falhava
+silenciosamente e caía num fallback genérico. Desde 18/08/2026 usa
+`with_structured_output` (LangChain) quando há um provedor com chave
+estática configurado (`langchain_deepseek.ChatDeepSeek` para
+DEEPSEEK_API_KEY, `langchain_anthropic.ChatAnthropic` para
+ANTHROPIC_API_KEY); sem chave estática (fluxo OAuth puro, sem integração
+pronta no LangChain pro access_token com refresh desta classe) cai pro
+parse legado. Achado ao vivo: `deepseek-v4-pro` (modelo padrão) roda em
+"thinking mode" e recusa `tool_choice` forçado — a chamada estruturada
+usa `deepseek-chat` especificamente por isso (`_chat_model_langchain` em
+`claude_brain.py`). Escopo deliberadamente pequeno: só
+`classificar_processo` mudou; `send_message`/`ask` (usados pelo Guardian)
+continuam no cliente HTTP cru de sempre.
