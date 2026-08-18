@@ -898,7 +898,7 @@ class LegalOneCadastro:
         """Manda screenshot + prompt para o Gemini (visao) e devolve o texto."""
         key = os.getenv('GOOGLE_API_KEY') or os.getenv('GEMINI_API_KEY')
         if not key:
-            return self._ollama_vision(prompt, png_bytes)
+            return self._groq_vision(prompt, png_bytes)
         model = os.getenv('LEGALONE_VISION_MODEL', 'gemini-2.5-flash')
         url = ("https://generativelanguage.googleapis.com/v1beta/models/"
                + model + ":generateContent?key=" + key)
@@ -914,9 +914,43 @@ class LegalOneCadastro:
             return None
         if r.status_code != 200:
             logger.warning("   [VISAO] Gemini " + str(r.status_code) + ": " + r.text[:120])
-            return self._ollama_vision(prompt, png_bytes)  # reserva quando Gemini estoura cota
+            return self._groq_vision(prompt, png_bytes)  # reserva quando Gemini estoura cota
         try:
             return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+        except Exception:
+            return self._groq_vision(prompt, png_bytes)
+
+    def _groq_vision(self, prompt, png_bytes):
+        """Reserva de visao: Groq (qwen/qwen3.6-27b), gratuito e rapido,
+        quando o Gemini falha/estoura cota. Cai pro Ollama local so' se o
+        Groq tambem nao responder (18/08/2026). Modelo roda em modo
+        'thinking' — precisa de max_tokens folgado pra nao cortar a
+        resposta no meio do raciocinio antes do JSON final."""
+        key = os.getenv('GROQ_API_KEY')
+        if not key:
+            return self._ollama_vision(prompt, png_bytes)
+        modelo = os.getenv('GROQ_VISION_MODEL', 'qwen/qwen3.6-27b')
+        b64 = base64.b64encode(png_bytes).decode()
+        body = {
+            "model": modelo,
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64," + b64}},
+            ]}],
+        }
+        try:
+            r = requests.post("https://api.groq.com/openai/v1/chat/completions",
+                              headers={"Authorization": "Bearer " + key}, json=body, timeout=60)
+        except Exception as e:
+            logger.warning("   [VISAO] Groq erro de rede: " + str(e)[:80])
+            return self._ollama_vision(prompt, png_bytes)
+        if r.status_code != 200:
+            logger.warning("   [VISAO] Groq " + str(r.status_code) + ": " + r.text[:120])
+            return self._ollama_vision(prompt, png_bytes)
+        try:
+            logger.info("   [VISAO] usando reserva Groq (qwen3.6-27b)")
+            return r.json()["choices"][0]["message"]["content"]
         except Exception:
             return self._ollama_vision(prompt, png_bytes)
 
@@ -982,11 +1016,14 @@ class LegalOneCadastro:
     def _agente_visual(self, objetivo, max_passos=5):
         """Agente de VISAO estilo Claude-in-Chrome: marca clicaveis com numeros,
         tira screenshot, Gemini decide qual numero clicar, e clica. Repete ate concluir."""
-        # Ollama local nao precisa de chave — so' checa a chave do
-        # Gemini se o Ollama nao estiver de pe' (18/08/2026).
-        tem_gemini = bool(os.getenv('GOOGLE_API_KEY') or os.getenv('GEMINI_API_KEY'))
-        if not tem_gemini and not self._ollama_disponivel():
-            logger.warning("   [VISAO] Sem GOOGLE_API_KEY e sem Ollama local - agente visual indisponivel")
+        # Ollama local nao precisa de chave — so' bloqueia se NENHUMA
+        # camada da cadeia (Gemini/Groq/Ollama) estiver disponivel (18/08/2026).
+        tem_provedor = bool(
+            os.getenv('GOOGLE_API_KEY') or os.getenv('GEMINI_API_KEY')
+            or os.getenv('GROQ_API_KEY') or self._ollama_disponivel()
+        )
+        if not tem_provedor:
+            logger.warning("   [VISAO] Nenhum provedor de visao disponivel (Gemini/Groq/Ollama) - agente visual indisponivel")
             return False
         for passo in range(max_passos):
             try:

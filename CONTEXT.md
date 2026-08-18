@@ -45,14 +45,17 @@ vazio" dos outros campos.
 quando os seletores normais falham: marca elementos clicáveis com número,
 manda o screenshot pra um modelo de visão, recebe de volta qual número
 clicar. Cadeia de reserva (18/08/2026): Gemini (primário, precisa de
-GOOGLE_API_KEY/GEMINI_API_KEY) → Ollama local (moondream, open-source, sem
-custo de API, sem chave) → OpenAI GPT-4o (último recurso, precisa de
-OPENAI_API_KEY com crédito). A ordem existe porque o OpenAI ficou sem
-crédito e travava toda recuperação automática — Ollama local entrou como
-camada intermediária grátis. Testado ao vivo: `avil/UI-TARS` (a escolha
-original) não tem o mmproj embutido no pacote da comunidade — não aceita
-imagem; `kimi-k2.7-code:cloud` exige assinatura paga do Ollama Cloud;
-`moondream` (biblioteca oficial, ~1.7GB) funciona. Isso é diferente do
+GOOGLE_API_KEY/GEMINI_API_KEY) → Groq (`qwen/qwen3.6-27b`, gratuito,
+rápido, preciso — leu corretamente texto denso de uma tela real do
+LegalOne) → Ollama local (moondream, sem custo de API, sem chave, mas
+alucinou na mesma tela real — só entra se Groq também falhar) → OpenAI
+GPT-4o (último recurso, precisa de OPENAI_API_KEY com crédito). A ordem
+existe porque o OpenAI ficou sem crédito e travava toda recuperação
+automática. Testado ao vivo: `avil/UI-TARS` (tentativa inicial) não tem o
+mmproj embutido no pacote da comunidade — não aceita imagem;
+`kimi-k2.7-code:cloud` exige assinatura paga do Ollama Cloud; Groq exige o
+modelo exato `qwen/qwen3.6-27b` (roda em modo "thinking" — precisa de
+max_tokens folgado, ~1024, senão corta antes do JSON final). Isso é diferente do
 Visual Guardian
 (visual_guardian.py), que usa claude_brain.py/Claude Sonnet pra
 recuperação de erros de cadastro — os dois sistemas de visão são
