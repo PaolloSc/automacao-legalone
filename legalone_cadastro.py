@@ -9520,6 +9520,19 @@ class LegalOneCadastro:
                 self._preencher_lookup_por_id(f'{base}Text', f'{base}Id', valor, busca=busca)
                 self._checar_vinculo(f'lookup {base}')
 
+        # Orgao: o Forms as vezes manda a sigla ('STJ', 'TJMG'), que nao bate
+        # no catalogo (guarda o nome por extenso) — o campo fica vazio em
+        # silencio porque _DATAJUD_CAMPOS so' entra quando o dado chega
+        # vazio, e aqui ja' tinha algo (a sigla). Fallback pro nome derivado
+        # do proprio CNJ quando o lookup com o valor do Forms nao commitou
+        # (achado real: recurso 5300618-93.2023.8.09.0051, 19/08/2026 — a
+        # sigla 'STJ' deixou OrgaoId vazio e ninguem percebeu ate' salvar).
+        if self._estado_campo('OrgaoId') == 'vazio':
+            orgao_cnj = self._orgao_do_cnj(cnj_recurso)
+            if orgao_cnj:
+                self._preencher_lookup_por_id('OrgaoText', 'OrgaoId', orgao_cnj)
+                self._checar_vinculo('lookup Orgao (fallback CNJ)')
+
         for id_campo, campos in (
             ('NumeroVaraTurma', ('numero_turma',)),
             ('NumeroAntigo', ('numero_antigo',)),
