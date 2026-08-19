@@ -1200,7 +1200,10 @@ class LegalOneCadastro:
             import cua_win
             if cua_win.disponivel() and cua_win.clicar_editar_do_cnj(cnj):
                 time.sleep(3)
-                cua_win.clicar_label('continuar com o preenchimento') or cua_win.clicar_label('continuar')
+                clicou = (cua_win.clicar_label('continuar com o preenchimento')
+                          or cua_win.clicar_label('continuar'))
+                if not clicou:
+                    logger.warning("   [CUA] clique em 'continuar com o preenchimento' falhou (elemento nao respondeu)")
                 time.sleep(5)
                 self._switch_to_latest_page()
                 if 'draft-litigation/main' not in (self.page.url or ''):
@@ -4501,6 +4504,20 @@ class LegalOneCadastro:
             try:
                 # Verifica se ainda está logado/ativo checando URL ou Title
                 title = self.page.title()
+                url = self.page.url or ""
+                # Execucao longa (loop de horas) pode deixar a sessao do
+                # LegalOne expirar sem fechar a pagina/navegador -> title()
+                # ainda responde, mas a pagina caiu no login do Thomson
+                # Reuters. Sem checar isso aqui, o cadastro seguia direto
+                # pra tela de login e falhava em "Navegar para cadastro
+                # CNJ" (log 18/08 18:41).
+                if (
+                    "signon.thomsonreuters.com" in url
+                    or "auth.thomsonreuters.com" in url
+                    or "Sign In" in title
+                ):
+                    logger.warning("[SESSAO] Sessão expirada (caiu no login), relogando...")
+                    return self.fazer_login()
                 logger.info(f"[SESSAO] Navegador ativo. Título: {title}")
                 return True
             except:
@@ -9684,9 +9701,17 @@ class LegalOneCadastro:
         """
         dados = dados_processo or {}
         origem = self._valor_limpo(dados.get('vinculo'))
-        if not origem or len(re.sub(r'\D', '', origem)) != 20:
+        # Aceita CNJ completo (20 digitos) OU o codigo de pasta do LegalOne
+        # ('Proc - 0004487'): confirmado ao vivo (19/08/2026) que
+        # _link_detalhes_da_busca reconhece esse formato e desambigua certo
+        # mesmo quando o cliente tem varios processos parecidos na busca —
+        # o campo 'Vinculo' do Forms as vezes vem preenchido com o codigo da
+        # pasta (o que o advogado ve na tela do LegalOne) em vez do CNJ.
+        eh_cnj = bool(origem) and len(re.sub(r'\D', '', origem)) == 20
+        eh_codigo_pasta = bool(origem) and bool(re.match(r'(?i)^proc\s*-\s*\d+', origem))
+        if not (eh_cnj or eh_codigo_pasta):
             self.last_error_reason = (
-                f"Recurso cível sem vínculo com CNJ de origem (vinculo={dados.get('vinculo')!r}) "
+                f"Recurso cível sem vínculo com CNJ/pasta de origem (vinculo={dados.get('vinculo')!r}) "
                 "— tratar manualmente")
             logger.error(f"[RECURSO CÍVEL] {self.last_error_reason}")
             return False
