@@ -7567,8 +7567,14 @@ class LegalOneCadastro:
     # A lista suspensa da tela de alteracao e'
     # `div.lookup-dropdown > .lookup-wrapper > table > tr[data-val-id]`; o
     # `.ac_results li` do autocomplete antigo so aparece em outras telas.
+    # Alguns catalogos (confirmado no Pedido "Nome" do recurso, 19/08/2026)
+    # usam o MESMO widget lookupTree da Área/Centro de custo mesmo sendo
+    # uma lista de um nivel so — a linha vem com `data-val-level`, nao
+    # `data-val-id`, e por isso nunca era encontrada: a busca sempre
+    # voltava "0 opções" mesmo com o nome exato existindo no catalogo.
     _SELETORES_OPCAO_LOOKUP = (
         '.lookup-dropdown:visible tr[data-val-id]',
+        '.lookup-dropdown:visible tr[data-val-level]',
         '.ac_results li:visible',
     )
 
