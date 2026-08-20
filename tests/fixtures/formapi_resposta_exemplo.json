@@ -1,0 +1,61 @@
+{
+  "_nota": "Fixture sintetica baseada no formato REAL confirmado em docs/SPIKE_FORMAPI_ACHADOS.md (campos e tipos verificados contra a API ao vivo em 2026-08-20). Conteudo (nomes, CNJ, etc) e' FICTICIO, nao copiado de resposta real.",
+  "definicao": {
+    "id": "FORM_ID_FICTICIO",
+    "questions": [
+      {
+        "id": "r87d78f80cc554a47abd79f8d4b5409e5",
+        "title": "Tipo de cadastro",
+        "type": "Question.ChoiceText",
+        "required": true,
+        "choices": [
+          {"displayText": "Cadastro inicial"},
+          {"displayText": "Decisões"},
+          {"displayText": "Recurso"},
+          {"displayText": "Arquivamento"},
+          {"displayText": "Incidente"}
+        ]
+      },
+      {
+        "id": "r2bc74b87ee204c6f94b7ee96b4a4c582",
+        "title": "Número CNJ",
+        "type": "Question.TextField",
+        "required": true,
+        "choices": []
+      },
+      {
+        "id": "r1fdeffd7f9534e1382de4f7b063ccd80",
+        "title": "Cliente principal",
+        "type": "Question.TextField",
+        "required": true,
+        "choices": []
+      },
+      {
+        "id": "r50842be13846455895348a174114bdc3",
+        "title": "Contrário principal",
+        "type": "Question.TextField",
+        "required": false,
+        "choices": []
+      },
+      {
+        "id": "rf3e44dbc2ed44fac87a605822bf1479f",
+        "title": "Centro de custo",
+        "type": "Question.ChoiceText",
+        "required": true,
+        "choices": [
+          {"displayText": "Cível"},
+          {"displayText": "Trabalhista"},
+          {"displayText": "Tributário"}
+        ]
+      }
+    ]
+  },
+  "resposta": {
+    "id": 201,
+    "startDate": "2026-08-10T13:35:03.0518523Z",
+    "submitDate": "2026-08-10T13:40:09.3028523Z",
+    "responder": "usuario.teste@carvalhofurtadoadv.com.br",
+    "responderName": "Usuario Teste",
+    "answers": "[{\"answer1\":\"Cadastro inicial\",\"questionId\":\"r87d78f80cc554a47abd79f8d4b5409e5\"},{\"answer1\":\"1234567-89.2025.8.13.0024\",\"questionId\":\"r2bc74b87ee204c6f94b7ee96b4a4c582\"},{\"answer1\":\"Cliente Ficticio LTDA\",\"questionId\":\"r1fdeffd7f9534e1382de4f7b063ccd80\"},{\"answer1\":\"Contrario Ficticio\",\"questionId\":\"r50842be13846455895348a174114bdc3\"},{\"answer1\":\"Cível;Trabalhista\",\"questionId\":\"rf3e44dbc2ed44fac87a605822bf1479f\"}]"
+  }
+}
