@@ -59,6 +59,15 @@ except ImportError:
     FIRECRAWL_DISPONIVEL = False
     logger.warning("[INIT] Firecrawl nao disponivel - usando apenas Playwright")
 
+# Extracao via API interna do Forms (formapi) — alternativa ao Playwright,
+# atras da flag FORMS_USE_API (ver automacao_legalone_completa.py)
+try:
+    from forms_api_cliente import FormsApiCliente, SessaoFormsExpirada
+    from forms_api_conversor import converter_resposta_para_perguntas_forms
+    FORMS_API_DISPONIVEL = True
+except ImportError:
+    FORMS_API_DISPONIVEL = False
+
 
 class FormsExtractor:
     """Extrai dados de respostas do Microsoft Forms"""
@@ -1101,6 +1110,69 @@ class FormsExtractor:
         else:
             logger.info(f"[NAV] ℹ Já estava na última resposta (#{numero})")
         return numero
+
+    @staticmethod
+    def _extrair_form_id(forms_url: str) -> str | None:
+        m = re.search(r'[?&]id=([^&]+)', forms_url or '')
+        return m.group(1) if m else None
+
+    def extrair_ultima_resposta_via_api(self, forms_url: str) -> dict | None:
+        """Equivalente a _garantir_forms_aberto + _ir_para_ultima_resposta,
+        mas via API interna (formapi) em vez de Playwright.
+
+        tenant_id/user_id sao FIXOS por conta (ver docs/SPIKE_FORMAPI_ACHADOS.md)
+        — nao precisam ser descobertos a cada chamada. Lidos de env vars com
+        default pros valores ja' confirmados nesta conta, pra nao ficar hardcoded
+        sem como trocar se a conta mudar.
+        """
+        if not FORMS_API_DISPONIVEL:
+            self.erro_extracao = "forms_api_cliente/forms_api_conversor nao disponiveis"
+            return None
+
+        form_id = self._extrair_form_id(forms_url)
+        if not form_id:
+            self.erro_extracao = f"Nao foi possivel extrair form id de {forms_url}"
+            return None
+
+        tenant_id = os.getenv('FORMS_API_TENANT_ID', 'b3308b02-3160-463b-8b8c-cb0f556f4e77')
+        user_id = os.getenv('FORMS_API_USER_ID', '5fd503f6-bf9f-4c2c-b305-a33259dc8147')
+        fixa = os.getenv('FORMS_RESPOSTA_FIXA', '').strip()
+        piso = int(os.getenv('FORMS_RESPOSTA_MINIMA', '') or self.resposta_minima)
+
+        try:
+            cliente = FormsApiCliente(state_file=self.state_file, tenant_id=tenant_id, user_id=user_id)
+            definicao = cliente.definicao_formulario(form_id)
+            ultimo_salvo = max(self.ler_ultimo_numero() or 0, piso)
+            skip = int(fixa) - 1 if fixa.isdigit() else ultimo_salvo
+            respostas = cliente.listar_respostas(form_id, skip=max(skip, 0), top=100)
+        except SessaoFormsExpirada as e:
+            self.erro_extracao = str(e)
+            logger.error(f"[FORMS-API] {self.erro_extracao}")
+            return None
+        except Exception as e:
+            self.erro_extracao = f"Erro ao consultar API do Forms: {e}"
+            logger.error(f"[FORMS-API] {self.erro_extracao}")
+            return None
+
+        if fixa.isdigit():
+            alvo = next((r for r in respostas if str(r.get("id")) == fixa), None)
+        else:
+            candidatas = [r for r in respostas if int(r.get("id", 0)) > ultimo_salvo]
+            alvo = max(candidatas, key=lambda r: int(r["id"])) if candidatas else None
+
+        if not alvo:
+            logger.info("[FORMS-API] Nenhuma resposta nova encontrada")
+            return None
+
+        perguntas = converter_resposta_para_perguntas_forms(definicao, alvo)
+        dados = {"perguntas_forms": perguntas}
+        dados = self._aplicar_mapeamento_forms(dados)
+
+        numero = int(alvo["id"])
+        if not fixa.isdigit() and numero >= piso:
+            self.salvar_proximo_numero(numero)
+
+        return dados
 
     async def fechar_forms(self):
         """Fecha o navegador persistente e libera recursos."""

@@ -651,7 +651,8 @@ class AutomacaoLegalOne:
                     if chave not in _campos_base and valor:
                         dados_processo['outros_dados'][chave] = valor
             else:
-                # Fluxo original: raspa o Forms via Playwright
+                # Fluxo original: raspa o Forms via Playwright (ou via API
+                # interna do Forms com FORMS_USE_API=1 — ver forms_extractor.py)
                 logger.info("\n🔍 Extraindo dados do Forms...")
                 assunto_detectado = email_data.get('assunto_detectado') or cfg_forms['assunto_filtro']
                 forms_extractor = self.forms_extractors.get(
@@ -659,9 +660,13 @@ class AutomacaoLegalOne:
                     self.forms_extractor,
                 )
                 logger.info(f"[FORMS] Usando extrator: {forms_extractor.modulo_mapeamento}")
-                dados_processo = _run_coro_blocking(
-                    forms_extractor.extrair_dados_forms(email_data['forms_link'])
-                )
+                FORMS_USE_API = os.getenv("FORMS_USE_API", "0").strip().lower() in ("1", "true", "yes", "sim")
+                if FORMS_USE_API:
+                    dados_processo = forms_extractor.extrair_ultima_resposta_via_api(email_data['forms_link'])
+                else:
+                    dados_processo = _run_coro_blocking(
+                        forms_extractor.extrair_dados_forms(email_data['forms_link'])
+                    )
 
                 # Fallback: usa extrator enhanced se faltar CNJ ou dados principais
                 if self.forms_extractor_enhanced and (
