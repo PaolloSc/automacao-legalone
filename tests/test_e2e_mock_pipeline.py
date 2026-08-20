@@ -92,6 +92,34 @@ def test_processar_email_todos_os_tipos_sem_crash(monkeypatch):
         assert bot.legalone.chamadas[0]["cnj"] == payload["cnj"]
 
 
+def test_forms_use_api_sem_resposta_nova_nao_crasha(monkeypatch):
+    """Regressao do finding de review: extrair_ultima_resposta_via_api() pode
+    devolver None no caminho NORMAL (nada novo, nao so' em erro) — o antigo
+    extrair_dados_forms (Playwright) nunca devolve None. Sem o guard em
+    processar_email(), isso caia direto no dados_processo.get(...) e
+    lancava AttributeError."""
+    bot = _montar_automacao_fake(monkeypatch)
+    bot.forms_extractors = {}
+    fake_extractor = MagicMock()
+    fake_extractor.modulo_mapeamento = "forms_mapping"
+    fake_extractor.extrair_ultima_resposta_via_api.return_value = None
+    fake_extractor.erro_extracao = None
+    bot.forms_extractor = fake_extractor
+    monkeypatch.setenv("FORMS_USE_API", "1")
+
+    email_data = {
+        "subject": "Cadastro de processos NOVOS LegalOne trabalhista",
+        "sender": "forms@microsoft.com",
+        "forms_link": "https://forms.cloud.microsoft/...&id=FORM123",
+    }
+
+    bot.processar_email(email_data)  # nao deve lancar AttributeError
+
+    fake_extractor.extrair_ultima_resposta_via_api.assert_called_once()
+    assert bot.stats["processos_cadastrados"] == 0
+    assert bot.stats["erros"] == 0
+
+
 # ------------------------------------------------------------------
 # Nivel A.2 — preencher_campos_obrigatorios(): confirma que cliente/contrario/
 # posicao chegam LIMPOS (sem papel/CNPJ colado) no ponto onde seriam

@@ -663,6 +663,16 @@ class AutomacaoLegalOne:
                 FORMS_USE_API = os.getenv("FORMS_USE_API", "0").strip().lower() in ("1", "true", "yes", "sim")
                 if FORMS_USE_API:
                     dados_processo = forms_extractor.extrair_ultima_resposta_via_api(email_data['forms_link'])
+                    if dados_processo is None:
+                        # Nada de novo (ou sessao expirada — ja logado/setado em
+                        # erro_extracao dentro do metodo) — nada a fazer neste
+                        # ciclo. So' a API pode devolver None aqui: o caminho
+                        # Playwright (extrair_dados_forms) sempre devolve dict.
+                        logger.info(
+                            f"[FORMS-API] Nenhuma resposta nova para processar "
+                            f"({forms_extractor.erro_extracao or 'sem novidades'})"
+                        )
+                        return
                 else:
                     dados_processo = _run_coro_blocking(
                         forms_extractor.extrair_dados_forms(email_data['forms_link'])

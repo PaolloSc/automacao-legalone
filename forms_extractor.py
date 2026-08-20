@@ -1137,9 +1137,9 @@ class FormsExtractor:
         tenant_id = os.getenv('FORMS_API_TENANT_ID', 'b3308b02-3160-463b-8b8c-cb0f556f4e77')
         user_id = os.getenv('FORMS_API_USER_ID', '5fd503f6-bf9f-4c2c-b305-a33259dc8147')
         fixa = os.getenv('FORMS_RESPOSTA_FIXA', '').strip()
-        piso = int(os.getenv('FORMS_RESPOSTA_MINIMA', '') or self.resposta_minima)
 
         try:
+            piso = int(os.getenv('FORMS_RESPOSTA_MINIMA', '') or self.resposta_minima)
             cliente = FormsApiCliente(state_file=self.state_file, tenant_id=tenant_id, user_id=user_id)
             definicao = cliente.definicao_formulario(form_id)
             ultimo_salvo = max(self.ler_ultimo_numero() or 0, piso)
