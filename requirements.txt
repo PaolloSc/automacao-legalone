@@ -4,7 +4,10 @@ beautifulsoup4>=4.12
 lxml>=4.9
 python-dotenv>=1.0
 # Scrapling — parser HTML resiliente para extração de campos
-scrapling>=0.2
+# 'fetchers': sem esse extra o Fetcher quebra em import (falta curl_cffi/
+# browserforge/patchright) e cai em silencio pro modo sem Scrapling —
+# achado ao vivo 19/08/2026, venv da automacao tinha so' scrapling>=0.2.
+scrapling[fetchers]>=0.2
 
 # Opção A — extração via LLM (Groq grátis)
 groq>=0.11
@@ -18,6 +21,7 @@ azure-ai-documentintelligence>=1.0
 
 # Testes — mock de HTTP (sem rede real)
 responses>=0.25
+respx>=0.20
 pytest>=8.0
 
 # Structured output do claude_brain.py (classificar_processo) — DeepSeek e Anthropic
