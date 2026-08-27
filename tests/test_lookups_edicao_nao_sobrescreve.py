@@ -28,8 +28,19 @@ def test_orgao_procedimento_fase_continuam_cobertos_pela_ficha():
     assert bases.get("Fase") == ("fase",)
 
 
+def test_cadastrar_processo_nao_chama_valores_monetarios_antes_do_save():
+    """A chamada antes do clicar_salvar() era no-op (tela Angular nao tem
+    os ids de _FICHA_LOOKUPS/_PERSONALIZADOS_*) e misturava Fase 3 dentro
+    da Fase 1."""
+    src = inspect.getsource(LegalOneCadastro.cadastrar_processo)
+    idx_salvar = src.index("if not self.clicar_salvar():")
+    trecho_antes_do_save = src[:idx_salvar]
+    assert "_aplicar_valores_monetarios" not in trecho_antes_do_save
+
+
 if __name__ == "__main__":
     test_metodo_inseguro_foi_removido()
     test_realizar_acoes_pos_cadastro_nao_chama_mais_o_metodo_removido()
     test_orgao_procedimento_fase_continuam_cobertos_pela_ficha()
+    test_cadastrar_processo_nao_chama_valores_monetarios_antes_do_save()
     print("ok")
