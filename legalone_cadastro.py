@@ -6558,10 +6558,17 @@ class LegalOneCadastro:
             )
             negociacao = self._valor_limpo(negociacao)
             if not negociacao:
-                # Campo e obrigatorio: sem ele o LegalOne rejeita o salvar
-                negociacao = os.getenv('LEGALONE_NEGOCIACAO_PADRAO', 'Negociação padrão')
+                # Regra de negocio (PROMPT_REFATORACAO_LEGALONE.md, Fase 1
+                # item 7): campo obrigatorio sem dado do Forms -> Pro Bono,
+                # com alerta explicito de que precisa correcao manual.
+                negociacao = 'Pro Bono'
+                logger.warning(
+                    "   ⚠ Negociação de honorários não veio nos dados - "
+                    "usando 'Pro Bono' (requer correção manual posterior)"
+                )
                 dados.setdefault('_qa_warnings', []).append(
-                    f"Negociação de honorários não veio nos dados - usado padrão '{negociacao}'"
+                    "Negociação de honorários ausente - preenchido 'Pro Bono' "
+                    "automaticamente; corrigir manualmente no LegalOne"
                 )
             if negociacao:
                 try:
