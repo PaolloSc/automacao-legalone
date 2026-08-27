@@ -9165,11 +9165,6 @@ class LegalOneCadastro:
             if fase:
                 self._alterar_fase_processo(fase)
 
-            try:
-                self._preencher_lookups_edicao(dados)
-            except Exception as e:
-                logger.warning(f"   [RECURSO] lookups: {e}")
-
             # Painel de resultado quando o Forms de recurso trouxe resultado
             def obter(*campos):
                 return self._obter_de_forms(dados, *campos)
@@ -12735,11 +12730,6 @@ class LegalOneCadastro:
             return False
 
     @staticmethod
-    def _orgao_do_monitoramento(texto: str) -> str:
-        """'TRT03 - Diario do Tribunal Regional do Trabalho da 3a Regiao' -> 'TRT 3'."""
-        m = re.search(r'\bTRT\s*0*(\d{1,2})\b', texto or '', re.I)
-        return f"TRT {int(m.group(1))}" if m else ''
-
     def _preencher_lookup_antigo(self, id_base: str, valor: str) -> bool:
         """Campo lookup da tela de alteracao endereçado pelo id (#<base>Text).
 
@@ -12749,24 +12739,6 @@ class LegalOneCadastro:
         return self._preencher_lookup_por_id(
             f'{id_base}Text', f'{id_base}Id', valor
         )
-
-    def _preencher_lookups_edicao(self, dados: dict | None) -> None:
-        """Orgao, Procedimento e Fase na tela de alteracao."""
-        dados = dados or {}
-        painel = ''
-        try:
-            painel = self.page.eval_on_selector(
-                '.monitoring-summary-parameter', 'el => el.innerText') or ''
-        except Exception:
-            pass
-        outros = dados.get('outros_dados') or {}
-        for id_base, valor in (
-            ('Orgao', dados.get('orgao') or self._orgao_do_monitoramento(painel)),
-            ('Procedimento', outros.get('procedimento') or dados.get('procedimento')),
-            ('Fase', dados.get('fase')),
-        ):
-            if valor:
-                self._preencher_lookup_antigo(id_base, self._valor_limpo(valor))
 
     def salvar_e_fechar_cadastro(self) -> bool:
         """Clica em 'Salvar e fechar' na tela de alteracao do processo.
@@ -12927,8 +12899,6 @@ class LegalOneCadastro:
                         f"   [ALTERAR] Completando obrigatórios (vazios detectados: {len(vazios)}; rascunho: {veio_de_rascunho})"
                     )
                     self.preencher_campos_obrigatorios(dados_processo)
-                # Orgao/Procedimento/Fase so existem nesta tela (lookup jQuery)
-                self._preencher_lookups_edicao(dados_processo)
                 # Moedas da ficha (recurso / processo ja existente em alteracao)
                 try:
                     self._aplicar_valores_monetarios(dados_processo)
