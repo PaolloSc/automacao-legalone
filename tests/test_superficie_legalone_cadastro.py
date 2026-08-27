@@ -54,6 +54,9 @@ METODOS = (
     "_preencher_valores_monetarios",
     "_aplicar_valores_monetarios",
     "_enriquecer_dados_datajud",
+    "preencher_fase1_capa",
+    "preencher_fase2_processual",
+    "preencher_fase3_risco_honorarios",
 )
 
 

@@ -10755,6 +10755,44 @@ class LegalOneCadastro:
             logger.error(f"   âŒ Erro ao salvar: {e}")
             return False
 
+
+    # ------------------------------------------------------------------
+    # Wrappers de fase (PROMPT_REFATORACAO_LEGALONE.md) — orquestram, na
+    # ordem pedida, os metodos que ja fazem o preenchimento de cada campo.
+    # Nao duplicam logica de combobox/lookup: so chamam na sequencia certa.
+    # ------------------------------------------------------------------
+    def preencher_fase1_capa(self, dados: dict) -> bool:
+        """Capa: monitoramento, titulo, cliente/posicao/contrario,
+        responsavel, negociacao de honorarios (regra Pro Bono), centro de
+        custo, datacloud. Fica tudo dentro de preencher_campos_obrigatorios
+        -- nenhum campo de Fase 2/3 e' tocado aqui."""
+        return bool(self.preencher_campos_obrigatorios(dados))
+
+    def preencher_fase2_processual(self, dados: dict) -> bool:
+        """Orgao, Procedimento, Fase, Instancia, Comarca/Foro, Vara/Turma
+        (via _FICHA_LOOKUPS em _aplicar_valores_monetarios), Pedidos e
+        Vinculos. So roda depois do save da capa (os ids dessa tela nao
+        existem antes -- ver Task 3)."""
+        try:
+            self._aplicar_valores_monetarios(dados)
+        except Exception as e:
+            logger.warning(f"   [FASE2] falha ao preencher processual: {e}")
+        if not self._abrir_secao_pedidos():
+            logger.warning("   ⚠ Não foi possível abrir seção de pedidos")
+        preenchidos, total_itens = self._preencher_pedidos_forms(dados or {})
+        if isinstance(dados, dict):
+            dados.setdefault('_pedidos_stats', {'preenchidos': preenchidos, 'total': total_itens})
+        return total_itens == 0 or preenchidos > 0
+
+    def preencher_fase3_risco_honorarios(self, dados: dict) -> bool:
+        """Contingencia/Risco (_preencher_previsao_e_resultado),
+        Responsabilidade e Cobranca de Honorarios com justificativa
+        condicional (_PERSONALIZADOS_* dentro de _aplicar_valores_monetarios,
+        ja chamado pela Fase 2 -- so falta a validacao)."""
+        self._validar_justificativas_honorarios(dados)
+        return self._preencher_previsao_e_resultado(dados)
+
+
     def cadastrar_processo(self, dados_processo):
         """Fluxo de cadastro usando sessão persistente"""
         self._monitoramento_solicitado = False
