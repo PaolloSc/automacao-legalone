@@ -10820,6 +10820,10 @@ class LegalOneCadastro:
                         logger.info("Rascunho reaberto - completando cadastro...")
                         self.preencher_campos_obrigatorios(dados_processo)
                         self.preencher_detalhes_faltantes(dados_processo)
+                        try:
+                            self._aplicar_valores_monetarios(dados_processo)
+                        except Exception as e:
+                            logger.warning(f"   [MOEDAS] falha no rascunho: {e}")
                         if self.clicar_salvar():
                             if self.realizar_acoes_pos_cadastro(dados_processo):
                                 return self._confirmar_no_acervo(dados_processo)

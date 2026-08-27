@@ -29,13 +29,17 @@ def test_orgao_procedimento_fase_continuam_cobertos_pela_ficha():
 
 
 def test_cadastrar_processo_nao_chama_valores_monetarios_antes_do_save():
-    """A chamada antes do clicar_salvar() era no-op (tela Angular nao tem
-    os ids de _FICHA_LOOKUPS/_PERSONALIZADOS_*) e misturava Fase 3 dentro
-    da Fase 1."""
+    """A chamada antes do clicar_salvar() do fluxo principal era no-op (tela
+    Angular nao tem os ids de _FICHA_LOOKUPS/_PERSONALIZADOS_*) e misturava
+    Fase 3 dentro da Fase 1. Escopado so ao fluxo principal (a partir do
+    comentario '# 5. Preenche...') -- o branch de rascunho, mais acima no
+    mesmo metodo, fica de fora deste teste de proposito: aquele call NAO
+    foi removido (fora de escopo deliberado, tela nao verificada)."""
     src = inspect.getsource(LegalOneCadastro.cadastrar_processo)
-    idx_salvar = src.index("if not self.clicar_salvar():")
-    trecho_antes_do_save = src[:idx_salvar]
-    assert "_aplicar_valores_monetarios" not in trecho_antes_do_save
+    idx_inicio_fluxo_principal = src.index("# 5. Preenche campos obrigatórios com dados do Forms")
+    idx_salvar = src.index("if not self.clicar_salvar():", idx_inicio_fluxo_principal)
+    trecho_fluxo_principal_antes_do_save = src[idx_inicio_fluxo_principal:idx_salvar]
+    assert "_aplicar_valores_monetarios" not in trecho_fluxo_principal_antes_do_save
 
 
 if __name__ == "__main__":
