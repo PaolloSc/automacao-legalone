@@ -12768,6 +12768,53 @@ class LegalOneCadastro:
             if valor:
                 self._preencher_lookup_antigo(id_base, self._valor_limpo(valor))
 
+    def salvar_e_fechar_cadastro(self) -> bool:
+        """Clica em 'Salvar e fechar' na tela de alteracao do processo.
+
+        Extraido de dentro de realizar_acoes_pos_cadastro (ate 27/08/2026 a
+        logica vivia duplicada inline, com os mesmos seletores que
+        clicar_salvar ja usa para a tela de capa). So' clica -- quem chama
+        continua responsavel por confirmar o salvamento
+        (_confirmar_salvamento).
+        """
+        logger.info("5️⃣  Clicando em 'Salvar e fechar'...")
+        seletores_salvar = [
+            'button[name="ButtonSave"][value="0"]',
+            'button[type="submit"][name="ButtonSave"]',
+            '#btnSave',
+            'button:has-text("Salvar e fechar")',
+            'button:has-text("Salvar")',
+            'input[type="submit"][value*="Salvar"]',
+        ]
+        for sel_salvar in seletores_salvar:
+            try:
+                btn_salvar = self.page.wait_for_selector(sel_salvar, state='visible', timeout=5000)
+                if btn_salvar:
+                    btn_salvar.scroll_into_view_if_needed()
+                    btn_salvar.click()
+                    logger.info("   ✓ 'Salvar e fechar' clicado")
+                    return True
+            except Exception:
+                continue
+
+        logger.warning("   ⚠ Botão 'Salvar e fechar' não encontrado — tentando via JS...")
+        try:
+            clicou = bool(self.page.evaluate("""
+                () => {
+                    const btn = document.querySelector('button[name="ButtonSave"]')
+                        || Array.from(document.querySelectorAll('button[type="submit"]'))
+                            .find(b => b.textContent.includes('Salvar'));
+                    if (btn) { btn.click(); return true; }
+                    return false;
+                }
+            """))
+            if clicou:
+                logger.info("   ✓ 'Salvar e fechar' clicado via JS")
+            return clicou
+        except Exception as e:
+            logger.error(f"   ❌ Falha ao salvar: {e}")
+            return False
+
     def realizar_acoes_pos_cadastro(self, dados_processo: dict | None = None):
         """Executa ações após o salvamento: abrir processo, entrar em Alterar e preencher pedidos do Forms."""
         try:
@@ -12951,57 +12998,17 @@ class LegalOneCadastro:
                 self.last_error_reason = "Nenhum pedido foi cadastrado"
                 return False
 
-            logger.info("5ï¸âƒ£  Clicando em 'Salvar e fechar'...")
-            salvo = False
-            seletores_salvar = [
-                'button[name="ButtonSave"][value="0"]',
-                'button[type="submit"][name="ButtonSave"]',
-                '#btnSave',
-                'button:has-text("Salvar e fechar")',
-                'button:has-text("Salvar")',
-                'input[type="submit"][value*="Salvar"]',
-            ]
-            for sel_salvar in seletores_salvar:
-                try:
-                    btn_salvar = self.page.wait_for_selector(sel_salvar, state='visible', timeout=5000)
-                    if btn_salvar:
-                        btn_salvar.scroll_into_view_if_needed()
-                        btn_salvar.click()
-                        logger.info("   ✓ 'Salvar e fechar' clicado")
-                        salvo = True
-                        break
-                except Exception:
-                    continue
-
-            if not salvo:
-                logger.warning("   ⚠ Botão 'Salvar e fechar' não encontrado — tentando via JS...")
-                try:
-                    salvo = bool(self.page.evaluate("""
-                        () => {
-                            const btn = document.querySelector('button[name="ButtonSave"]')
-                                || Array.from(document.querySelectorAll('button[type="submit"]'))
-                                    .find(b => b.textContent.includes('Salvar'));
-                            if (btn) { btn.click(); return true; }
-                            return false;
-                        }
-                    """))
-                    if salvo:
-                        logger.info("   ✓ 'Salvar e fechar' clicado via JS")
-                except Exception as e:
-                    logger.error(f"   âŒ Falha ao salvar: {e}")
-
-            if not salvo:
+            if not self.salvar_e_fechar_cadastro():
                 self.last_error_reason = "Pedidos não foram salvos: botão Salvar e fechar indisponível"
                 return False
 
-            if salvo:
-                time.sleep(3)
-                try:
-                    self.page.wait_for_load_state('domcontentloaded', timeout=15000)
-                except Exception:
-                    pass
-                if not self._confirmar_salvamento(timeout_s=20):
-                    return False
+            time.sleep(3)
+            try:
+                self.page.wait_for_load_state('domcontentloaded', timeout=15000)
+            except Exception:
+                pass
+            if not self._confirmar_salvamento(timeout_s=20):
+                return False
 
             # 6. Resolver monitoramento pendente (best-effort, nunca propaga erro)
             try:
