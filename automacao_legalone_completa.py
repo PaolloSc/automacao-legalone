@@ -542,6 +542,22 @@ class AutomacaoLegalOne:
             return None
         return achado[1]
 
+    @staticmethod
+    def _cc_sucesso(email_data: dict | None, dados_processo: dict | None) -> list[str]:
+        """CC do e-mail de sucesso: trabalhista sempre copia a Monica."""
+        dados = dados_processo or {}
+        email = email_data or {}
+        origem = ' '.join(str(v or '') for v in (
+            dados.get('natureza'),
+            email.get('assunto_detectado'),
+            email.get('subject'),
+        )).lower()
+        if 'trabalhista' not in origem:
+            return []
+        from equipe import EQUIPE
+        monica = EQUIPE.get('Mônica Furtado Pinheiro Chagas')
+        return [monica] if monica else []
+
     def _montar_notificacao_erro(self, email_data: dict | None, dados_processo: dict | None) -> dict:
         email_data = email_data or {}
         dados_processo = dados_processo or {}
@@ -1081,6 +1097,11 @@ class AutomacaoLegalOne:
             },
             "saveToSentItems": False,
         }
+        if notificacao.get('cc'):
+            payload["message"]["ccRecipients"] = [
+                {"emailAddress": {"address": copia}}
+                for copia in notificacao['cc']
+            ]
 
         try:
             url = f"https://graph.microsoft.com/v1.0/users/{remetente}/sendMail"
@@ -1118,6 +1139,9 @@ class AutomacaoLegalOne:
         msg['Subject'] = notificacao['subject']
         msg['From'] = remetente
         msg['To'] = ', '.join(notificacao['to'])
+        cc = notificacao.get('cc') or []
+        if cc:
+            msg['Cc'] = ', '.join(cc)
         msg.attach(MIMEText(notificacao['text'], 'plain', 'utf-8'))
         msg.attach(MIMEText(notificacao['html'], 'html', 'utf-8'))
 
@@ -1133,7 +1157,7 @@ class AutomacaoLegalOne:
                     servidor.ehlo()
                 if usuario and senha:
                     servidor.login(usuario, senha)
-                servidor.sendmail(remetente, notificacao['to'], msg.as_string())
+                servidor.sendmail(remetente, notificacao['to'] + cc, msg.as_string())
             return True, "Enviado via SMTP"
         except Exception as e:
             return False, f"Falha no SMTP: {e}"
@@ -1150,6 +1174,8 @@ class AutomacaoLegalOne:
             outlook = win32com.client.Dispatch("Outlook.Application")
             mail = outlook.CreateItem(0)
             mail.To = '; '.join(notificacao['to'])
+            if notificacao.get('cc'):
+                mail.CC = '; '.join(notificacao['cc'])
             mail.Subject = notificacao['subject']
             mail.HTMLBody = notificacao['html']
             mail.Send()
@@ -1301,12 +1327,20 @@ class AutomacaoLegalOne:
             destinatarios.append(respondente)
             logger.info(f"[EMAIL-OK] confirmando tambem para quem respondeu: {respondente}")
 
+        cc = []
+        ja_cobertos = {d.lower() for d in destinatarios}
+        for copia in self._cc_sucesso(email_data, dados_processo):
+            if copia.lower() not in ja_cobertos:
+                cc.append(copia)
+                logger.info(f"[EMAIL-OK] trabalhista — copiando: {copia}")
+
         notificacao = {
             'cnj': cnj,
             'subject': rotulos['assunto'],
             'text': texto,
             'html': html,
             'to': destinatarios,
+            'cc': cc,
         }
 
         tentativas = [

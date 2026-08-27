@@ -467,6 +467,26 @@ class LegalOneCadastro:
             if not paginas:
                 return False
             self.page = paginas[-1]
+            # Duas coisas alem de so trocar a referencia do Playwright:
+            # 1. bring_to_front() -- sem isso a aba nova fica em background;
+            #    o Playwright continua operando nela via CDP (log mostrava
+            #    "✓ selecionado" certinho), mas o CUA le a arvore UIA da aba
+            #    que esta' VISIVEL de verdade -- ai' clicava em controles do
+            #    proprio Chrome (favoritos, aviso de --no-sandbox) porque a
+            #    aba antiga ainda era a que aparecia na tela.
+            # 2. fechar as abas antigas -- ficavam duas abas abertas e so'
+            #    uma delas era usada; a outra so' atrapalhava o CUA, que
+            #    acha a janela do Chrome por titulo (list_windows), sem
+            #    saber qual aba dentro dela e' a certa (achado 19/08/2026).
+            try:
+                self.page.bring_to_front()
+            except Exception:
+                pass
+            for p in paginas[:-1]:
+                try:
+                    p.close()
+                except Exception:
+                    pass
             return True
         except Exception:
             return False
@@ -3651,6 +3671,21 @@ class LegalOneCadastro:
 
             logger.info("      ✅ Formulário de adição de contato detectado")
 
+            # Screenshot logo que o(s) modal(is) aparece(m): usuario relatou ao
+            # vivo (19/08/2026, CNJ 0011190) que essa etapa as vezes abre DUAS
+            # telas e o codigo trata como se fosse uma so' — nesse caso real o
+            # valor de 'Alenice Gomes de Jesus' (Contrario) vazou pro campo
+            # 'Cliente principal', que devia continuar com 'Inovar Recursos
+            # Humanos'. Sem imagem daquele momento nao da' pra confirmar QUAL
+            # dos dois modais o preenchimento seguinte pegou.
+            try:
+                os.makedirs("logs", exist_ok=True)
+                nome_arquivo = f"logs/contato_add_aberto_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                self.page.screenshot(path=nome_arquivo, full_page=False)
+                logger.info(f"      📸 Screenshot ao abrir modal de contato: {nome_arquivo}")
+            except Exception:
+                pass
+
             # Identifica o modal mais recente (topmost) para escopar os próximos seletores
             modal_ativo = self._obter_modal_contato_ativo()
             if modal_ativo:
@@ -4858,7 +4893,7 @@ class LegalOneCadastro:
             logger.error(f"âŒ Erro no login: {e}")
             return False
 
-    def navegar_cadastro_cnj(self):
+    def navegar_cadastro_cnj(self, _retry_apos_relogin: bool = True):
         """Navega até cadastro automático por CNJ"""
         try:
             if not self._ensure_page_active():
@@ -4919,33 +4954,109 @@ class LegalOneCadastro:
                     menu_aberto = True
 
             if not menu_aberto:
+                # so' 'adicionar': 'novo'/'+' tambem batem num atalho "+ Novo
+                # processo" que existe solto na tela e NAVEGA direto pra
+                # /processos/processos/create (cadastro manual, sem captura
+                # por CNJ) em vez de abrir o popover -- achado ao vivo
+                # 19/08/2026, deixava a pagina errada e o passo 3 falhava
+                # procurando o modal numa tela que nunca teve esse elemento.
                 logger.info("   Tentando abrir menu 'Adicionar' por texto...")
-                if self._click_by_text(["adicionar", "novo", "+"]):
+                if self._click_by_text(["adicionar"]):
                     time.sleep(1)
                     if self.page.is_visible('#automatic-process-modal-link'):
                         menu_aberto = True
+
+            if not menu_aberto and 'processos/processos/create' in (self.page.url or ''):
+                # go_back() sozinho so' limpava o diagnostico (pagina certa
+                # de novo) mas devolvia False do mesmo jeito, porque nada
+                # tentava reabrir o popover depois -- e nao ha retry no
+                # chamador (cadastrar_processo roda isso uma vez so). Sem
+                # essa segunda tentativa aqui, corrigir a pagina errada nao
+                # bastava pra completar o cadastro.
+                logger.warning(
+                    "   ⚠ acabou em /create sem abrir o popover -- voltando e tentando de novo")
+                try:
+                    self.page.go_back(wait_until='domcontentloaded', timeout=10000)
+                    time.sleep(1)
+                    botao = self.page.wait_for_selector(
+                        'span.add-popover-menu:has-text("Adicionar")',
+                        state='visible', timeout=3000)
+                    if botao:
+                        botao.hover()
+                        time.sleep(1)
+                        if not self.page.is_visible('#automatic-process-modal-link'):
+                            botao.click()
+                            time.sleep(1)
+                        menu_aberto = self.page.is_visible('#automatic-process-modal-link')
+                except Exception:
+                    pass
 
             time.sleep(1)
 
             # 3. Selecionar cadastro automático
             logger.info("3ï¸âƒ£  Selecionando 'Cadastro Automático'...")
 
+            # O clique aqui abre o MODAL onde preencher_cnj vai procurar
+            # #CNJNumberAutomaticModal -- sem confirmar que ele apareceu de
+            # verdade, um clique que nao surtiu efeito (elemento errado,
+            # popover ja fechado, sessao derrubada por acesso concorrente --
+            # LegalOne so permite 1 sessao por licenca, e se o usuario abrir
+            # a propria conta ao mesmo tempo o bot pode ser deslogado no meio
+            # do fluxo) ainda contava como sucesso. O log de 19/08 (CNJ
+            # 0011190-56.2026.5.03.0028) mostrou exatamente isso:
+            # navegar_cadastro_cnj devolveu True mas o diagnostico da falha
+            # seguinte pegou a pagina ainda na lista de Pesquisa, sem
+            # nenhum modal aberto.
+            def _modal_cnj_abriu() -> bool:
+                try:
+                    return bool(self.page.wait_for_selector(
+                        '#CNJNumberAutomaticModal', state='visible', timeout=8000))
+                except Exception:
+                    return False
+
             try:
                 target_link = self.page.wait_for_selector('#automatic-process-modal-link', state='visible', timeout=5000)
                 if target_link:
                     target_link.click()
-                    time.sleep(3)
-                    return True
+                    time.sleep(1)
+                    if _modal_cnj_abriu():
+                        return True
+                    logger.warning("   ⚠ Clicou no link mas o modal de CNJ nao apareceu")
                 else:
                     raise Exception("Não achou link automatico")
             except Exception as e:
                 logger.warning(f"   ⚠ Link direto não encontrado: {e}")
-                logger.info("   Tentando clicar por texto 'Cadastro Automático'...")
-                if self._click_by_text(["cadastro automático", "cadastro automatico", "automatico", "automático"]):
-                    time.sleep(3)
+
+            logger.info("   Tentando clicar por texto 'Cadastro Automático'...")
+            if self._click_by_text(["cadastro automático", "cadastro automatico", "automatico", "automático"]):
+                time.sleep(1)
+                if _modal_cnj_abriu():
                     return True
-                logger.error("   âŒ Cancelado: link de cadastro automático não localizado")
-                return False
+                logger.warning("   ⚠ Clicou por texto mas o modal de CNJ nao apareceu")
+
+            # LegalOne so permite 1 sessao por licenca: se o usuario abriu a
+            # propria conta ao mesmo tempo, o bot pode ter sido deslogado no
+            # meio do fluxo sem nenhum dos cliques acima dar erro visivel --
+            # relogar e tentar a navegacao inteira mais uma vez antes de
+            # desistir (guarda de recursao: so' uma tentativa extra).
+            url_atual = (self.page.url or '')
+            titulo_atual = ''
+            try:
+                titulo_atual = self.page.title() or ''
+            except Exception:
+                pass
+            if _retry_apos_relogin and (
+                'signon.thomsonreuters.com' in url_atual
+                or 'auth.thomsonreuters.com' in url_atual
+                or 'Sign In' in titulo_atual
+            ):
+                logger.warning(
+                    "   ⚠ Cai no login no meio da navegacao (outra sessao ativa?) -- relogando e tentando de novo")
+                if self.fazer_login():
+                    return self.navegar_cadastro_cnj(_retry_apos_relogin=False)
+
+            logger.error("   ✖ Cancelado: modal de cadastro automatico nao abriu")
+            return False
 
         except Exception as e:
             logger.error(f"âŒ Erro na navegação: {e}")
@@ -5193,6 +5304,27 @@ class LegalOneCadastro:
             self._registrar_diagnostico_falha("Aguardar e continuar cadastro", str(e))
             return False
 
+    @staticmethod
+    def _contrato_honorarios_bate(valor_atual: str, valor_alvo: str) -> bool:
+        """O contrato ja preenchido na tela e' o mesmo que o Forms pediu?
+
+        Compara so' os digitos (formato varia: 'Hon - 0000013' x 'Hon. 00013/001'
+        x 'Hon - 0000053/001') -- dois contratos so' contam como iguais se um dos
+        numeros e' prefixo/sufixo digitos-only do outro (cobre padding de zeros
+        e o sufixo '/001' opcional). Numeros diferentes = contrato diferente,
+        mesmo que o campo ja tenha algo (achado 19/08/2026).
+        """
+        if not valor_atual or not valor_alvo:
+            return False
+        da = re.sub(r'\D', '', valor_atual).lstrip('0')
+        db = re.sub(r'\D', '', valor_alvo).lstrip('0')
+        if not da or not db:
+            return valor_atual.strip().lower() == valor_alvo.strip().lower()
+        # Igualdade estrita, sem prefixo: 'startswith' deixava '13' (Hon - 0000013)
+        # bater com '13001' (Hon. 00013/001) so' por coincidencia de digitos —
+        # contratos diferentes, nao um caso de padding. Na duvida, o Forms manda.
+        return da == db
+
     def preencher_campo_autocomplete(self, seletor_input, valor, nome_campo,
                                      cnpj: str | None = None,
                                      tipo_pessoa: str | None = None,
@@ -5295,9 +5427,19 @@ class LegalOneCadastro:
                     campo,
                 ) or ''
                 valor_atual = (valor_atual or '').strip()
-                if valor_atual:
+                # So pula se o valor ja presente bater com o que o Forms
+                # mandou. Antes qualquer valor pre-existente (LegalOne as vezes
+                # auto-sugere o contrato mais recente do cliente ao selecionar o
+                # Cliente Principal) bloqueava a troca pelo contrato certo --
+                # achado ao vivo 19/08/2026: campo veio com 'Hon - 0000013' e o
+                # Forms pedia 'Hon. 00013/001' (contratos diferentes).
+                if valor_atual and self._contrato_honorarios_bate(valor_atual, valor):
                     logger.info(f"   ✓ Negociação de contrato de honorários já preenchido: '{valor_atual}' — pulando")
                     return True
+                if valor_atual:
+                    logger.warning(
+                        f"   ⚠ Negociação de contrato de honorários tinha '{valor_atual}' "
+                        f"(Forms pede '{valor}') — sobrescrevendo")
 
             logger.info(f"   ðŸ“ Preenchendo {nome_campo}: {valor}")
 
@@ -6475,9 +6617,13 @@ class LegalOneCadastro:
                         ) or ''
 
                     valor_atual_negociacao = (valor_atual_negociacao or '').strip()
-                    if valor_atual_negociacao:
+                    if valor_atual_negociacao and self._contrato_honorarios_bate(valor_atual_negociacao, negociacao):
                         logger.info(f"   ✓ Negociação de contrato de honorários já preenchido: '{valor_atual_negociacao}' — pulando")
                     else:
+                        if valor_atual_negociacao:
+                            logger.warning(
+                                f"   ⚠ Negociação de contrato de honorários tinha '{valor_atual_negociacao}' "
+                                f"(Forms pede '{negociacao}') — sobrescrevendo")
                         self.preencher_campo_autocomplete(
                             seletor_negociacao,
                             negociacao,
@@ -8266,6 +8412,10 @@ class LegalOneCadastro:
         ('Natureza', ('natureza',)),
         ('Orgao', ('orgao',)),
         ('Procedimento', ('procedimento',)),
+        # Fase entrava so' pelo fallback heuristico de labels (menos
+        # confiavel) — Orgao/Procedimento ja tinham esse caminho solido por
+        # id, Fase ficava de fora sem motivo (achado 19/08/2026).
+        ('Fase', ('fase',)),
         ('Vara', ('nome_vara_turma',)),
         ('NegociacaoContratoHonorario', ('contrato_honorarios',)),
         # Envolvidos principais. O texto visivel chega vazio no HTML (o JS
@@ -8283,6 +8433,12 @@ class LegalOneCadastro:
         ('NumeroAntigo', ('numero_antigo',)),
         ('NumeroVaraTurma', ('numero_turma',)),
         ('Observacoes', ('observacoes', 'comentario_adicional')),
+        # Titulo ja tinha um preenchimento proprio em
+        # preencher_campos_obrigatorios (com fallback "{cliente} x
+        # {contrario}"), mas so' rodava no cadastro inicial — aqui cobre
+        # tambem recurso/decisao pelo mesmo caminho solido por id que
+        # Orgao/Procedimento ja usam (achado 19/08/2026).
+        ('Titulo', ('titulo', 'Título', 'Titulo', 'Título do processo', 'Titulo do processo')),
     )
     _FICHA_DATAS = (
         ('DataDistribuicao', ('data_distribuicao',)),
@@ -9520,6 +9676,21 @@ class LegalOneCadastro:
                 self._preencher_lookup_por_id(f'{base}Text', f'{base}Id', valor, busca=busca)
                 self._checar_vinculo(f'lookup {base}')
 
+        # Cliente_IsThirdParty: hidden setado por JS quando o picker do
+        # Cliente principal e' usado via clique real. _preencher_lookup_por_id
+        # injeta Id/Text direto e pula esse handler, entao o campo fica ''
+        # e o POST rejeita com "The IsThirdParty field is required." (achado
+        # ao vivo 17/08/2026, CNJ 4782756-12). Cliente principal nunca e'
+        # terceiro nesse fluxo — default explicito 'False' se ainda vazio.
+        if self._lookup_gravou('Cliente_EnvolvidoId') and not self._lookup_gravou('Cliente_IsThirdParty'):
+            try:
+                self.page.evaluate(
+                    "(id) => { const el = document.getElementById(id); "
+                    "if (el) el.value = 'False'; }",
+                    'Cliente_IsThirdParty')
+            except Exception:
+                pass
+
         # Orgao: o Forms as vezes manda a sigla ('STJ', 'TJMG'), que nao bate
         # no catalogo (guarda o nome por extenso) — o campo fica vazio em
         # silencio porque _DATAJUD_CAMPOS so' entra quando o dado chega
@@ -9679,7 +9850,16 @@ class LegalOneCadastro:
         except Exception:
             logger.info("   [POS-SAVE] pagina ainda navegando")
 
-        if not self._existe_processo_na_busca(cnj_recurso):
+        achou = self._existe_processo_na_busca(cnj_recurso)
+        if achou is None:
+            # busca falhou (excecao), nao "nao achou" — nao da' pra afirmar
+            # que o recurso nao foi gravado, so' que nao deu pra confirmar
+            self.last_error_reason = (
+                f"POST concluido mas nao consegui confirmar o recurso {cnj_recurso} "
+                "na pesquisa (busca falhou) — checar manualmente")
+            logger.error(f"[RECURSO CÍVEL] {self.last_error_reason}")
+            return False
+        if not achou:
             self.last_error_reason = (
                 f"POST concluido mas o recurso {cnj_recurso} nao aparece na pesquisa "
                 "— nao foi gravado")
@@ -9690,27 +9870,35 @@ class LegalOneCadastro:
         logger.info(f"\n✅ [RECURSO CÍVEL] recurso {cnj_recurso} criado e confirmado na busca")
         return True
 
-    def _existe_processo_na_busca(self, numero: str) -> bool:
-        """Evidencia no sistema: o numero aparece na pesquisa de processos?"""
+    def _existe_processo_na_busca(self, numero: str) -> bool | None:
+        """Evidencia no sistema: o numero aparece na pesquisa de processos?
+
+        True/False = busca rodou e achou/nao achou. None = a busca em si
+        falhou (excecao) — NAO e' prova de que o processo nao foi gravado,
+        so' que nao deu pra confirmar. Antes isso virava False e o chamador
+        reportava "nao foi gravado" como se fosse confirmado (falso negativo
+        visto ao vivo 8x entre 14/08 e 19/08).
+        """
         alvo = re.sub(r'\D', '', str(numero or ''))
         if not alvo:
             return False
-        try:
-            self.page.goto(
-                'https://carvalhofurtadoadv.novajus.com.br/processos/processos/search',
-                wait_until='domcontentloaded', timeout=25000)
-            campo = self.page.wait_for_selector('#Search, input[name="Search"]', timeout=15000)
-            campo.click()
-            campo.fill('')
-            campo.type(numero, delay=30)
-            self.page.click('#search-box-input-submit, input[value="Pesquisar"]')
-            self.page.wait_for_load_state('domcontentloaded')
-            time.sleep(2.5)
-            texto = self.page.evaluate("() => document.body.innerText.replace(/\\D/g, '')")
-            return alvo in (texto or '')
-        except Exception as e:
-            logger.warning(f"   ⚠ nao consegui confirmar na busca: {e}")
-            return False
+        for tentativa in range(2):
+            try:
+                self.page.goto(
+                    'https://carvalhofurtadoadv.novajus.com.br/processos/processos/search',
+                    wait_until='domcontentloaded', timeout=25000)
+                campo = self.page.wait_for_selector('#Search, input[name="Search"]', timeout=15000)
+                campo.click()
+                campo.fill('')
+                campo.type(numero, delay=30)
+                self.page.click('#search-box-input-submit, input[value="Pesquisar"]')
+                self.page.wait_for_load_state('domcontentloaded')
+                time.sleep(2.5)
+                texto = self.page.evaluate("() => document.body.innerText.replace(/\\D/g, '')")
+                return alvo in (texto or '')
+            except Exception as e:
+                logger.warning(f"   ⚠ nao consegui confirmar na busca (tentativa {tentativa + 1}): {e}")
+        return None
 
     def _fluxo_recurso_civel(self, dados_processo):
         """Recurso cível: cria 'Novo recurso' DENTRO da pasta do processo de origem.
@@ -10747,22 +10935,37 @@ class LegalOneCadastro:
             self._resolver_pendentes_com_cua(dados_processo)
 
             # 7. Clica no botao Salvar
-            if self.clicar_salvar():
-                # O rascunho já foi convertido em processo salvo. Não tente
-                # preencher novamente os campos do formulário de pré-cadastro
-                # na página de edição antes de adicionar os pedidos.
-                self._captura_em_rascunhos = False
-                # 8. Realiza ações pós-cadastro (Clicar Proc -> Alterar -> Add Pedido)
-                pos_ok = self.realizar_acoes_pos_cadastro(dados_processo)
-                if not pos_ok:
-                    # O processo JA esta gravado — o que falhou foi reabrir a tela de
-                    # alteracao para os pedidos. Reportar isso como FALHA NO CADASTRO
-                    # mandou e-mail de erro para um processo que existia (pasta 8990,
-                    # 30/07). Quem da o veredito e' _confirmar_no_acervo.
-                    logger.warning("Acoes pos-cadastro falharam — processo salvo, pedidos pendentes")
-                    (dados_processo or {}).setdefault('_qa_warnings', []).append(
-                        'Processo salvo, mas os pedidos nao foram cadastrados — completar manualmente'
-                    )
+            if not self.clicar_salvar():
+                # Salvar REJEITADO ou nao confirmado (last_error_reason ja setado por
+                # clicar_salvar/_confirmar_salvamento) -- NAO cair no _confirmar_no_acervo:
+                # ele so confere se o CNJ aparece na busca de Pastas, e um rascunho
+                # tambem aparece la'. Isso mandava "[OK] PROCESSO CADASTRADO!" pra um
+                # processo que o proprio LegalOne recusou salvar, com Pedidos e
+                # Contrato de Honorarios nunca alcancados porque ambos vivem em
+                # realizar_acoes_pos_cadastro, que so roda dentro deste bloco (achado
+                # ao vivo 19/08/2026, CNJ 0011190-56.2026.5.03.0028: 'Salvar REJEITADO
+                # pelo LegalOne: 1 campo obrigatorio vazio' e o ciclo declarou sucesso
+                # do mesmo jeito).
+                logger.error("\n✖ Fluxo de cadastro abortado: Salvar nao confirmado.")
+                if not self.last_error_reason:
+                    self.last_error_reason = "Salvar nao confirmado pelo LegalOne"
+                return False
+
+            # O rascunho ja foi convertido em processo salvo. Nao tente
+            # preencher novamente os campos do formulario de pre-cadastro
+            # na pagina de edicao antes de adicionar os pedidos.
+            self._captura_em_rascunhos = False
+            # 8. Realiza acoes pos-cadastro (Clicar Proc -> Alterar -> Add Pedido)
+            pos_ok = self.realizar_acoes_pos_cadastro(dados_processo)
+            if not pos_ok:
+                # O processo JA esta gravado -- o que falhou foi reabrir a tela de
+                # alteracao para os pedidos. Reportar isso como FALHA NO CADASTRO
+                # mandou e-mail de erro para um processo que existia (pasta 8990,
+                # 30/07). Quem da o veredito e' _confirmar_no_acervo.
+                logger.warning("Acoes pos-cadastro falharam — processo salvo, pedidos pendentes")
+                (dados_processo or {}).setdefault('_qa_warnings', []).append(
+                    'Processo salvo, mas os pedidos nao foram cadastrados — completar manualmente'
+                )
 
             logger.info("\n✅ Fluxo de cadastro finalizado!")
             logger.info("ðŸ–¥ï¸  Navegador mantido aberto para conferência.")
@@ -11837,6 +12040,17 @@ class LegalOneCadastro:
             return False
         time.sleep(1.0)  # Esperar dropdown carregar resultados
 
+        # Na tela de 'Alterar processo' (pedido adicionado via link 'Adicionar
+        # pedido'), digitar sozinho NUNCA abre o .lookup-dropdown -- confirmado
+        # ao vivo (19/08/2026) via DOM: mesmo com o texto certo no campo e
+        # varios segundos de espera, .lookup-dropdown continuava com 0 de
+        # altura. So' apareceu apos um ArrowDown explicito -- widget so'
+        # renderiza a lista em resposta a navegacao por teclado, nao ao typing.
+        try:
+            inp_nome.press('ArrowDown', timeout=2000)
+        except Exception:
+            pass
+
         # Tentar localizar dropdown com opções
         seletores_dropdown = [
             # Estrutura real do LegalOne: lookup dropdown com uma tabela de árvore.
@@ -11859,7 +12073,19 @@ class LegalOneCadastro:
         opcoes_encontradas = []
         # A tabela do lookup é carregada assincronamente após a digitação.
         # Não pressionar Enter nem aceitar o texto livre enquanto ela não aparecer.
-        for _ in range(6):
+        # 3x "Nenhuma opção disponível" em 19/08 (CNJs com 'Admissão do recurso
+        # especial'; um retry manual segundos depois achou a opção com
+        # semelhanca 1.00) — não era mapeamento faltando, era o dropdown
+        # ainda não ter carregado dentro da janela antiga de ~4s. Dobra a
+        # janela e reforça a digitação na metade pra reacionar o debounce.
+        for tentativa in range(14):
+            if tentativa == 7:
+                try:
+                    inp_nome.press('Backspace', timeout=2000)
+                    inp_nome.type(texto_busca[-1] if texto_busca else '', delay=30, timeout=2000)
+                    inp_nome.press('ArrowDown', timeout=2000)
+                except Exception:
+                    pass
             for sel in seletores_dropdown:
                 try:
                     opcoes = self.page.locator(sel)
@@ -11925,9 +12151,21 @@ class LegalOneCadastro:
                                 break
                 for cand in candidatos_sin:
                     cand_norm = _normalizar_pedido(cand)
+                    # Sinonimo curto (sigla tipo 'he' = horas extras) via
+                    # substring pega qualquer palavra que contenha essas
+                    # letras por acaso -- 'he' bateu dentro de "reconHEcimento
+                    # de vinculo" e trocou 'Horas extras' pelo pedido errado
+                    # (achado ao vivo 19/08/2026). Abaixo de 4 caracteres so'
+                    # conta como match se for a palavra inteira, nao pedaco.
+                    curto = len(cand_norm) < 4
                     for opt, txt in opcoes_encontradas:
                         txt_norm = _normalizar_pedido(txt)
-                        if cand_norm in txt_norm or txt_norm in cand_norm:
+                        bate = (
+                            re.search(rf'\b{re.escape(cand_norm)}\b', txt_norm) is not None
+                            if curto else
+                            (cand_norm in txt_norm or txt_norm in cand_norm)
+                        )
+                        if bate:
                             melhor_match = (opt, txt)
                             logger.info(f"      ℹ Match via sinônimo '{cand}' → '{txt}'")
                             break

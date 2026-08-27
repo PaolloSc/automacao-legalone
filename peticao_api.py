@@ -67,7 +67,11 @@ def _get_legalone():
     if _legalone is None:
         try:
             from legalone_cadastro import LegalOneCadastro
-            _legalone = LegalOneCadastro()
+            # Perfil proprio: o monitor de Outlook (automacao_legalone_completa.py)
+            # roda em paralelo e usa "browser_data" puro. Perfil compartilhado
+            # fazia os dois processos brigarem pelo lock do Chrome e derrubar
+            # o navegador um do outro no meio de um cadastro (17/08/2026).
+            _legalone = LegalOneCadastro(profile_dir_suffix="_api")
             # Event loop persistente para Playwright
             _async_loop = asyncio.new_event_loop()
             t = threading.Thread(target=_async_loop.run_forever, daemon=True)

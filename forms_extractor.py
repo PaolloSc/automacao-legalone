@@ -953,6 +953,7 @@ class FormsExtractor:
         try:
             await btn_proximo.click(timeout=3000)
             await asyncio.sleep(2)
+            await self._aguardar_resposta_carregada()
         except Exception as e:
             logger.warning(f"[NAV] Erro ao clicar seta próximo: {e}")
             return False
@@ -1012,6 +1013,7 @@ class FormsExtractor:
             await asyncio.sleep(0.3)
             await page.keyboard.press('Enter')
             await asyncio.sleep(3)
+            await self._aguardar_resposta_carregada()
 
             numero_atual = await self._obter_numero_resposta_atual()
             logger.info(f"[NAV] ✅ Navegou direto para resposta #{numero_atual}")
@@ -1019,6 +1021,31 @@ class FormsExtractor:
         except Exception as e:
             logger.warning(f"[NAV] Erro ao navegar para resposta #{numero}: {e}")
             return False
+
+    async def _aguardar_resposta_carregada(self, tentativas: int = 8) -> None:
+        """Espera o Forms terminar de renderizar a resposta atual.
+
+        Achado ao vivo (13/08/2026, resposta com Entrevistado='. . .'): logo
+        apos navegar/avancar, a tela ainda mostra o placeholder de loading
+        'Lendo suas respostas...' e varios campos com '. . .' — se a extracao
+        roda nesse instante, esse texto vira valor de CADA pergunta,
+        inclusive o CNJ, e o cadastro inteiro falha rio abaixo com "CNJ
+        ausente ou invalido". _resposta_atual_vazia() nao pega esse caso
+        porque a tela NAO esta vazia, so' ainda carregando.
+        """
+        if not self._page:
+            return
+        for _ in range(tentativas):
+            try:
+                texto = (await self._page.locator('body').inner_text()) or ''
+            except Exception:
+                return
+            if 'lendo suas respostas' not in texto.lower():
+                return
+            await asyncio.sleep(0.5)
+        logger.warning(
+            "[NAV] ⚠ 'Lendo suas respostas...' ainda visivel apos espera — "
+            "seguindo mesmo assim")
 
     async def _resposta_atual_vazia(self) -> bool:
         """True quando a resposta na tela nao tem nenhuma pergunta respondida."""

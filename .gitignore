@@ -5,8 +5,7 @@
 !.env.example
 
 # ===== Sessões de navegador (cookies/login LegalOne) =====
-browser_data/
-browser_data_fallback/
+browser_data*/
 
 # ===== Dados reais de processos / clientes (LGPD) =====
 *.log
