@@ -8395,6 +8395,45 @@ class LegalOneCadastro:
             logger.warning(f"   [FICHA] Assunto (CNJ) ignorado: {e}")
         return resultado
 
+    def _validar_justificativas_honorarios(self, dados_processo: dict | None) -> list[str]:
+        """Fase 3: cobranca de honorarios respondida 'Nao' exige a
+        justificativa correspondente (PROMPT_REFATORACAO_LEGALONE.md, Fase 3
+        itens 5-6). So confere o dado de ENTRADA (nao o formulario) -- se a
+        justificativa nao veio do Forms nao ha o que digitar; o aviso e' o
+        jeito de garantir que alguem complete na mao.
+        """
+        dados = dados_processo or {}
+        outros = dados.get('outros_dados') or {}
+
+        def valor(*chaves):
+            for c in chaves:
+                v = self._valor_limpo(dados.get(c) or outros.get(c))
+                if v:
+                    return v
+            return ''
+
+        pares = (
+            ('cobranca_honorarios_sucumbenciais',
+             ('justificativa_nao_cobranca_honorarios_sucumbenciais',),
+             'Justificativa da não cobrança de honorários sucumbenciais'),
+            ('cobranca_honorarios_contratuais_exito',
+             ('justificativa_nao_cobranca_honorarios_contratuais',),
+             'Justificativa da não cobrança de honorários contratuais de êxito'),
+        )
+        avisos: list[str] = []
+        for campo_resposta, campos_justificativa, rotulo in pares:
+            resposta = valor(campo_resposta)
+            if self._normalizar_texto_busca(resposta) != 'nao':
+                continue
+            if not valor(*campos_justificativa):
+                avisos.append(
+                    f"Cobrança respondida 'Não' mas '{rotulo}' não veio nos "
+                    "dados - completar manualmente no LegalOne"
+                )
+        if avisos:
+            dados.setdefault('_qa_warnings', []).extend(avisos)
+        return avisos
+
     # ------------------------------------------------------------------
     # Ficha do processo: o resto do que o Forms respondeu.
     # Ids conferidos na varredura de 11/08/2026 da tela de alteracao
@@ -12905,6 +12944,7 @@ class LegalOneCadastro:
                     self._aplicar_valores_monetarios(dados_processo)
                 except Exception as e:
                     logger.warning(f"   [MOEDAS] falha na alteracao: {e}")
+                self._validar_justificativas_honorarios(dados_processo)
             except Exception as e:
                 logger.warning(f"   [ALTERAR] Falha ao completar obrigatórios: {e}")
 
