@@ -12807,7 +12807,6 @@ class LegalOneCadastro:
             logger.warning(f"   ⚠ Falha ao abrir processo pela tela atual: {e}")
             return False
 
-    @staticmethod
     def _preencher_lookup_antigo(self, id_base: str, valor: str) -> bool:
         """Campo lookup da tela de alteracao endereçado pelo id (#<base>Text).
 
