@@ -402,7 +402,7 @@ class AutomacaoLegalOne:
         # Campos diretos
         campos = [
             'cnj', 'tipo_cadastro', 'fase', 'instancia', 'cliente',
-            'contrario', 'advogado', 'comarca', 'valor_causa',
+            'contrario', 'posicao', 'advogado', 'comarca', 'valor_causa',
             'procedimento', 'data_distribuicao', 'risco', 'probabilidade'
         ]
 

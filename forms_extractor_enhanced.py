@@ -37,6 +37,7 @@ class FormsResponse(BaseModel):
     instancia: Optional[str] = None
     cliente: Optional[str] = None
     contrario: Optional[str] = None
+    posicao: Optional[str] = None
     advogado: Optional[str] = None
     comarca: Optional[str] = None
     valor_causa: Optional[str] = None
@@ -118,9 +119,24 @@ class EnhancedFormsExtractor:
         """Classifica e armazena dados usando NLP simples"""
         q = question.lower()
 
+        # Ordem importa: 'posicao' precisa vir antes de 'cliente' porque o
+        # rotulo real e' 'Posicao cliente principal'/'Posicao nos autos do
+        # Cliente Principal' -- contem 'cliente principal' como substring,
+        # entao checar 'cliente' primeiro classificava a pergunta errada.
         mapping = {
             "cnj": ["cnj", "número processo", "processo"],
             "tipo_cadastro": ["tipo cadastro", "cadastro"],
+            # So' 'posicao' + 'cliente': 'posição' sozinho tambem casava com
+            # 'Outros envolvidos e posição nos autos' (pergunta sobre
+            # testemunha/terceiro, forms_mapping.py:166 /
+            # forms_mapping_civel.py:384) -- como essa pergunta vem DEPOIS
+            # da real no DOM do civel, sobrescrevia o valor certo com nome
+            # de testemunha (achado pelo /ultrareview na PR).
+            "posicao": [
+                "posição cliente", "posicao cliente",
+                "posição nos autos do cliente", "posicao nos autos do cliente",
+            ],
+            "contrario": ["contrário principal", "contrario principal", "contrário", "contrario"],
             "cliente": ["cliente principal", "cliente"],
             "advogado": ["advogado responsável", "advogado"],
             "comarca": ["comarca", "cidade"],
