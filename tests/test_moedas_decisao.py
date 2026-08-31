@@ -33,21 +33,14 @@ def test_parse_moeda_br_ponto_como_separador_de_milhar():
 def test_custas_favoravel_nao_casa_como_desfavoravel():
     """Regressao 31/08/2026: 'favoravel' e' substring de 'desfavoravel' nos
     dois sentidos -- 'Desfavorável' escolhia CostsType='0' (Favoravel) em
-    vez de '1' (Desfavoravel)."""
+    vez de '1' (Desfavoravel). Chama _resolver_custas_tipo de verdade (nao
+    reimplementa a logica) -- um revert da producao quebra este teste."""
     bot = object.__new__(LegalOneCadastro)
     bot._normalizar_texto_busca = lambda v: LegalOneCadastro._normalizar_texto_busca(bot, v)
 
-    def resolver(texto):
-        chave = bot._normalizar_texto_busca(texto)
-        return next(
-            (v for k, v in sorted(LegalOneCadastro._CUSTAS_TIPO.items(), key=lambda kv: -len(kv[0]))
-             if k in chave),
-            None,
-        )
-
-    assert resolver("Desfavorável") == "1"
-    assert resolver("Favorável") == "0"
-    assert resolver("Sem posição") == "2"
+    assert bot._resolver_custas_tipo("Desfavorável") == "1"
+    assert bot._resolver_custas_tipo("Favorável") == "0"
+    assert bot._resolver_custas_tipo("Sem posição") == "2"
 
 
 def test_acordo_usa_valor_total_deferido_como_fallback():

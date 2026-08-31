@@ -8308,6 +8308,21 @@ class LegalOneCadastro:
         'semposicao': '2',
     }
 
+    def _resolver_custas_tipo(self, custas: str) -> str | None:
+        """Mapeia a resposta de custas para o CostsType do LegalOne.
+
+        So' `k in chave` (nao bidirecional): 'favoravel' e' substring de
+        'desfavoravel' nos dois sentidos, entao um check 'k in chave or
+        chave in k' casava 'Desfavoravel' com a chave curta 'favoravel'
+        mesmo ordenando por tamanho -- CostsType saia invertido (Favoravel).
+        """
+        chave = self._normalizar_texto_busca(custas)
+        return next(
+            (v for k, v in sorted(self._CUSTAS_TIPO.items(), key=lambda kv: -len(kv[0]))
+             if k in chave),
+            None,
+        )
+
     def _obter_de_forms(self, dados_processo, *campos) -> str:
         """Le campo canonico ou alias em outros_dados; ignora duplicata 'A | B'."""
         dados = dados_processo or {}
@@ -8337,16 +8352,7 @@ class LegalOneCadastro:
 
         custas = obter('custas')
         if custas:
-            chave = self._normalizar_texto_busca(custas)
-            # So' k in chave (nao bidirecional): 'favoravel' e' substring de
-            # 'desfavoravel' nos dois sentidos, entao o antigo 'chave in k'
-            # casava 'Desfavoravel' com a chave curta 'favoravel' mesmo com
-            # ordenacao por tamanho -- CostsType saia invertido (Favoravel).
-            escolha = next(
-                (v for k, v in sorted(self._CUSTAS_TIPO.items(), key=lambda kv: -len(kv[0]))
-                 if k in chave),
-                None,
-            )
+            escolha = self._resolver_custas_tipo(custas)
             if escolha is None:
                 logger.warning(f"   ⚠ CostsType: '{custas}' nao mapeado")
                 falhas.append('CostsType')
