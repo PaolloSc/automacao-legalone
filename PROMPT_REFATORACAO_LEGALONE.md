@@ -21,6 +21,23 @@ O que foi feito, commit a commit:
 
 Os 3 wrappers de fase existem e são testados, mas **não substituem** as chamadas diretas dentro de `cadastrar_processo`/`realizar_acoes_pos_cadastro` (que continuam chamando os métodos de origem diretamente) — decisão deliberada para não trocar uma sequência de chamadas já validada em produção por uma nova e não testada em campo, minimizando risco à automação ao vivo.
 
+### 🐛 Correções adicionais (31/08/2026, `fix/code-review-27-08` → `master` @ `3ff48ef`)
+
+Depois do refactor acima, um `/code-review` sobre o pacote inteiro achou 8 bugs em código que este plano não tocou (não são parte da sequência de fases, mas afetam o mesmo fluxo de cadastro). 6 foram corrigidos, revisados e mergeados:
+
+- **`_parse_moeda_br`** (`legalone_cadastro.py`) — `"150.000"` (formato BR sem vírgula) virava `150.0` em vez de `150000.0`: undercount de 1000x em valor de causa/acordo/honorários/custas. Corrigido: ponto sem vírgula em grupos de 3 dígitos agora é reconhecido como separador de milhar.
+- **`_CUSTAS_TIPO`** (`legalone_cadastro.py`, extraído para `_resolver_custas_tipo`) — `"Desfavorável"` escolhia `CostsType='0'` (Favorável) em vez de `'1'` (Desfavorável), porque `'favoravel'` é substring de `'desfavoravel'` nos dois sentidos do match antigo. Corrigido: match unidirecional, ordenado por tamanho decrescente.
+- **`rotulos_email_sucesso`** (`automacao_legalone_completa.py`) — recurso cível (`RECURSO_CIVEL`, mapeado por `forms_mapping_civel.py`) caía no e-mail genérico `[OK CADASTRO]` em vez de `[OK RECURSO]`; mesmo buraco no log de console equivalente. Ambos corrigidos.
+- **`_preencher_ficha_forms`** (`legalone_cadastro.py`) — o retorno `(ok, falhas)` era descartado nos dois pontos de chamada; falhas ao preencher Responsabilidade/Cobrança de Honorários (campos movidos pro `_PERSONALIZADOS_*` durante o refactor de fases) sumiam sem nenhum aviso. Agora entram no log/aviso de falhas.
+- **`_capturar_numero_pasta`** (`legalone_cadastro.py`) — um fallback fraco aceitava qualquer título de página com menos de 80 caracteres, incluindo títulos genéricos tipo "Editar processo", como se fosse o número da pasta. Restrito ao campo "Pasta" do formulário.
+- **Código morto** em `_preencher_pedidos_recurso` (`legalone_cadastro.py`) — `logger.info`/`return` inalcançáveis após um `return` anterior, referenciando uma variável `ok` nunca definida. Removido.
+
+Não corrigidos (julgamento documentado, review concordou que é razoável adiar):
+- **Fallback do `FormsExtractor Enhanced`** (`automacao_legalone_completa.py`) continua agnóstico de natureza (Cível vs. Trabalhista) — não recebe `modulo_mapeamento`, então pode perder/sobrescrever campos específicos quando dispara para Cível. Corrigir de verdade exige dar ao extrator NLP consciência de natureza — mudança maior que cabia nesta rodada. Mitigado com `logger.warning` explícito em vez de falha silenciosa.
+- **Lista de stopwords** hand-maintained pra desambiguar nome de tribunal (`legalone_cadastro.py`) — observação de manutenibilidade (cada novo par de tribunais parecidos exige mais uma entrada manual), não um bug concreto. Não mexido.
+
+535 testes passando (1 falha pré-existente e não relacionada: módulo `langchain_deepseek` ausente no venv compartilhado do monorepo).
+
 ---
 
 ## 🎯 Objetivo
