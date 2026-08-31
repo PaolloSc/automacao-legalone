@@ -52,9 +52,39 @@ def test_pergunta_sem_mapeamento_cai_em_outros_dados():
     assert data.get("outros_dados", {}).get("Alguma pergunta especifica sem mapeamento") == "resposta"
 
 
+def test_outros_envolvidos_nao_e_classificado_como_posicao():
+    """Regressao achada pelo /ultrareview na PR: 'posição' sozinho tambem
+    casava com 'Outros envolvidos e posição nos autos' (testemunha/
+    terceiro, forms_mapping.py:166), e como essa pergunta vem DEPOIS da
+    real 'Posição cliente principal' no DOM do civel
+    (forms_mapping_civel.py:374 vs 384), sobrescrevia o valor certo
+    (Autor/Reu) com nome de testemunha."""
+    data = _classificar("Outros envolvidos e posição nos autos", "Testemunha Fulano")
+    assert data.get("posicao") is None
+    assert data.get("outros_dados", {}).get("Outros envolvidos e posição nos autos") == "Testemunha Fulano"
+
+    data_civel = _classificar(
+        "Outros envolvidos (se houver) e sua posição nos autos", "Testemunha Ciclana"
+    )
+    assert data_civel.get("posicao") is None
+
+
+def test_ordem_no_dom_nao_sobrescreve_posicao_com_outros_envolvidos():
+    """Simula a ordem real do formulario civel: pergunta de Posicao (linha
+    374) vem antes de Outros envolvidos (linha 384) -- o valor certo tem
+    que sobreviver ate' o fim do scan."""
+    extrator = EnhancedFormsExtractor.__new__(EnhancedFormsExtractor)
+    data: dict = {}
+    extrator._classify_and_store("Posição nos autos do Cliente Principal", "Autor", data)
+    extrator._classify_and_store("Outros envolvidos (se houver) e sua posição nos autos", "Testemunha", data)
+    assert data.get("posicao") == "Autor"
+
+
 if __name__ == "__main__":
     test_classifica_posicao_rotulo_trabalhista()
     test_classifica_posicao_rotulo_civel()
     test_classifica_contrario_principal()
     test_pergunta_sem_mapeamento_cai_em_outros_dados()
+    test_outros_envolvidos_nao_e_classificado_como_posicao()
+    test_ordem_no_dom_nao_sobrescreve_posicao_com_outros_envolvidos()
     print("ok")
