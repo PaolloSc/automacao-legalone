@@ -118,9 +118,15 @@ class EnhancedFormsExtractor:
         """Classifica e armazena dados usando NLP simples"""
         q = question.lower()
 
+        # Ordem importa: 'posicao' precisa vir antes de 'cliente' porque o
+        # rotulo real e' 'Posicao cliente principal'/'Posicao nos autos do
+        # Cliente Principal' -- contem 'cliente principal' como substring,
+        # entao checar 'cliente' primeiro classificava a pergunta errada.
         mapping = {
             "cnj": ["cnj", "número processo", "processo"],
             "tipo_cadastro": ["tipo cadastro", "cadastro"],
+            "posicao": ["posição", "posicao"],
+            "contrario": ["contrário principal", "contrario principal", "contrário", "contrario"],
             "cliente": ["cliente principal", "cliente"],
             "advogado": ["advogado responsável", "advogado"],
             "comarca": ["comarca", "cidade"],
