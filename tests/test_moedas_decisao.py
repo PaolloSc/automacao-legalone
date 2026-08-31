@@ -20,6 +20,36 @@ def test_parse_moeda_br_aceita_formatos_comuns():
     assert LegalOneCadastro._parse_moeda_br("N/A") is None
 
 
+def test_parse_moeda_br_ponto_como_separador_de_milhar():
+    """Regressao 31/08/2026: '150.000' (sem virgula) e' R$150.000,00, nao
+    150.0 -- float() direto lia o ponto como decimal e undercountava 1000x."""
+    assert LegalOneCadastro._parse_moeda_br("150.000") == 150000.0
+    assert LegalOneCadastro._parse_moeda_br("1.234.567") == 1234567.0
+    # Um unico ponto seguido de menos de 3 digitos nao e' milhar BR -- fica
+    # como decimal (comportamento anterior preservado).
+    assert LegalOneCadastro._parse_moeda_br("80.5") == 80.5
+
+
+def test_custas_favoravel_nao_casa_como_desfavoravel():
+    """Regressao 31/08/2026: 'favoravel' e' substring de 'desfavoravel' nos
+    dois sentidos -- 'Desfavorável' escolhia CostsType='0' (Favoravel) em
+    vez de '1' (Desfavoravel)."""
+    bot = object.__new__(LegalOneCadastro)
+    bot._normalizar_texto_busca = lambda v: LegalOneCadastro._normalizar_texto_busca(bot, v)
+
+    def resolver(texto):
+        chave = bot._normalizar_texto_busca(texto)
+        return next(
+            (v for k, v in sorted(LegalOneCadastro._CUSTAS_TIPO.items(), key=lambda kv: -len(kv[0]))
+             if k in chave),
+            None,
+        )
+
+    assert resolver("Desfavorável") == "1"
+    assert resolver("Favorável") == "0"
+    assert resolver("Sem posição") == "2"
+
+
 def test_acordo_usa_valor_total_deferido_como_fallback():
     bot = object.__new__(LegalOneCadastro)
     lotes = []

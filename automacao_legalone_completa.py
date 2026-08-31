@@ -149,7 +149,7 @@ def rotulos_email_sucesso(
             'assunto': f"[OK ARQUIVAMENTO] Pasta {pasta} — CNJ {cnj} — arquivamento concluído",
             'tipo_label': 'Arquivamento',
         }
-    if tipo_u == 'RECURSO':
+    if tipo_u in ('RECURSO', 'RECURSO_CIVEL'):
         return {
             'titulo': '✅ Recurso registrado',
             'verbo': 'Recurso registrado',
@@ -698,6 +698,16 @@ class AutomacaoLegalOne:
                 if self.forms_extractor_enhanced and (
                     not dados_processo.get('cnj') or not dados_processo.get('outros_dados')
                 ):
+                    if modulo_mapeamento != 'forms_mapping':
+                        # EnhancedFormsExtractor nao recebe modulo_mapeamento -- e'
+                        # generico/trabalhista por dentro. Para Civel (ou outra
+                        # natureza) o fallback pode perder ou sobrescrever campos
+                        # especificos; sem aviso isso passava em silencio.
+                        logger.warning(
+                            f"[FALLBACK] FormsExtractor Enhanced e' generico e nao "
+                            f"conhece '{modulo_mapeamento}' — campos especificos "
+                            f"dessa natureza podem sair incompletos, conferir manualmente."
+                        )
                     logger.info("[FALLBACK] Usando FormsExtractor Enhanced...")
                     dados_enhanced = _run_coro_blocking(
                         self.forms_extractor_enhanced.extract_with_playwright_soup(email_data['forms_link'])
@@ -981,6 +991,8 @@ class AutomacaoLegalOne:
                         )
                     elif 'ARQUIV' in tipo_ok:
                         logger.info("\n[OK] ARQUIVAMENTO CONCLUIDO!")
+                    elif tipo_ok in ('RECURSO', 'RECURSO_CIVEL'):
+                        logger.info("\n[OK] RECURSO REGISTRADO!")
                     else:
                         logger.info("\n[OK] PROCESSO CADASTRADO!")
                 self.salvar_log_sucesso(email_data, dados_processo)

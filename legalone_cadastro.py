@@ -753,21 +753,19 @@ class LegalOneCadastro:
         if ja and ja.upper() not in ('N/A', 'NA', '-'):
             return ja
 
-        candidatos: list[str] = []
+        pasta_campo = ''
         try:
-            pasta_campo = self._valor_limpo(self._ler_valor_campo_formulario('Pasta'))
-            if pasta_campo:
-                candidatos.append(pasta_campo)
+            pasta_campo = self._valor_limpo(self._ler_valor_campo_formulario('Pasta')) or ''
         except Exception:
             pass
+        titulo = ''
         try:
             titulo = (self.page.title() if self.page else '') or ''
-            if titulo:
-                candidatos.append(titulo)
         except Exception:
             pass
 
-        for bruto in candidatos:
+        # 1) Padrao forte 'Proc - NNNN': confiavel em qualquer fonte.
+        for bruto in (pasta_campo, titulo):
             m = re.search(r'Proc\s*-\s*\d+', bruto or '')
             if m:
                 pasta = m.group(0)
@@ -775,15 +773,16 @@ class LegalOneCadastro:
                 logger.info(f"   [PASTA] {pasta}")
                 return pasta
 
-        for bruto in candidatos:
-            limpo = (bruto or '').strip()
-            if limpo and limpo.upper() not in ('N/A', 'NA', '-') and len(limpo) < 80:
-                # Campo Pasta as vezes vem so com o numero, sem o prefixo Proc.
-                if re.fullmatch(r'\d{4,}', limpo):
-                    limpo = f"Proc - {limpo}"
-                dados_processo['numero_pasta'] = limpo
-                logger.info(f"   [PASTA] {limpo}")
-                return limpo
+        # 2) Fallback fraco (texto solto/numero puro): SO no campo 'Pasta' do
+        # formulario, nunca no titulo da pagina -- um titulo generico tipo
+        # 'Editar processo' passava aqui e virava numero_pasta por engano.
+        limpo = pasta_campo.strip()
+        if limpo and limpo.upper() not in ('N/A', 'NA', '-') and len(limpo) < 80:
+            if re.fullmatch(r'\d{4,}', limpo):
+                limpo = f"Proc - {limpo}"
+            dados_processo['numero_pasta'] = limpo
+            logger.info(f"   [PASTA] {limpo}")
+            return limpo
         return None
 
     def _clicar_ver_rascunhos_se_disponivel(self, timeout_ms: int = 2500) -> bool:
@@ -7584,8 +7583,9 @@ class LegalOneCadastro:
         self._expandir_painel('Previsao e resultado')
         ok_painel, falhas_painel = self._preencher_painel_resultado(obter)
         ok_moedas, falhas_moedas = self._preencher_valores_monetarios(obter)
+        falhas_ficha: list[str] = []
         try:
-            self._preencher_ficha_forms(obter)
+            _, falhas_ficha = self._preencher_ficha_forms(obter)
         except NavegadorFechado:
             raise
         except Exception as e:
@@ -7629,6 +7629,12 @@ class LegalOneCadastro:
         # Moedas que o Forms trouxe e a tela nao gravou
         if falhas_moedas:
             nao_mapeados.extend(f"moeda:{f}" for f in falhas_moedas)
+        # Campos da ficha (Responsabilidade, Cobranca de Honorarios, etc. em
+        # _PERSONALIZADOS_*) que o Forms trouxe e a tela nao gravou -- antes
+        # o retorno de _preencher_ficha_forms era descartado e essas falhas
+        # sumiam em silencio.
+        if falhas_ficha:
+            nao_mapeados.extend(f"ficha:{f}" for f in falhas_ficha)
         if nao_mapeados:
             logger.warning(
                 "   [DECISAO] Campos do Forms sem mapeamento na tela (tratar "
@@ -8145,6 +8151,10 @@ class LegalOneCadastro:
             s = s.replace('.', '').replace(',', '.')
         elif ',' in s:
             s = s.replace(',', '.')
+        elif re.fullmatch(r'\d{1,3}(\.\d{3})+', s):
+            # '150.000' sem virgula: separador de milhar BR, nao decimal.
+            # Sem isso float() lia como 150.0 -- undercount de 1000x.
+            s = s.replace('.', '')
         try:
             return float(s)
         except ValueError:
@@ -8328,8 +8338,13 @@ class LegalOneCadastro:
         custas = obter('custas')
         if custas:
             chave = self._normalizar_texto_busca(custas)
+            # So' k in chave (nao bidirecional): 'favoravel' e' substring de
+            # 'desfavoravel' nos dois sentidos, entao o antigo 'chave in k'
+            # casava 'Desfavoravel' com a chave curta 'favoravel' mesmo com
+            # ordenacao por tamanho -- CostsType saia invertido (Favoravel).
             escolha = next(
-                (v for k, v in self._CUSTAS_TIPO.items() if k in chave or chave in k),
+                (v for k, v in sorted(self._CUSTAS_TIPO.items(), key=lambda kv: -len(kv[0]))
+                 if k in chave),
                 None,
             )
             if escolha is None:
@@ -8382,7 +8397,13 @@ class LegalOneCadastro:
 
         resultado = self._preencher_valores_monetarios(obter)
         try:
-            self._preencher_ficha_forms(obter)
+            _, falhas_ficha = self._preencher_ficha_forms(obter)
+            if falhas_ficha:
+                # So visibilidade: o contrato de retorno desta funcao e' so
+                # moedas (ver callers), entao a ficha nao entra no tuple --
+                # mas antes o retorno era descartado e essas falhas nem
+                # apareciam no log.
+                logger.warning(f"   [FICHA] campo(s) nao gravado(s): {', '.join(falhas_ficha)}")
         except NavegadorFechado:
             raise
         except Exception as e:
@@ -12526,8 +12547,6 @@ class LegalOneCadastro:
             item.setdefault('data_julgamento', '')
 
         return self._executar_loop_pedidos(itens)
-        logger.info(f"   [RECURSO CÍVEL] Pedidos: {ok}/{len(itens)} preenchidos")
-        return ok, len(itens)
 
     def _preencher_pedidos_forms(self, dados_processo: dict | None) -> tuple[int, int]:
         texto = self._extrair_texto_detalhes_pedidos(dados_processo or {})
