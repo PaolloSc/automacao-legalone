@@ -51,7 +51,13 @@ guardian_screenshots/
 qa_screenshots/
 debug_visaofill_*.png
 debug_forms_dump.html
+debug_*.html
+debug_*.json
+debug_*.png
+debug_*.txt
 ultimo_processo.txt
+ultimo_processo_civel.txt
+automacao.lock
 
 # Estado local de ferramentas de agente
 .claude/

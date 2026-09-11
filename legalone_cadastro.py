@@ -15,7 +15,7 @@ import sys
 import tempfile
 import unicodedata
 import equipe
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote_plus, urljoin
 from dotenv import load_dotenv
@@ -131,6 +131,24 @@ def _pagina_morta(e: Exception) -> bool:
     """True quando a excecao do Playwright indica pagina/browser fechado."""
     msg = str(e)
     return 'has been closed' in msg or 'Target closed' in msg or 'Browser closed' in msg
+
+
+_TITULO_PT_MINUSCULAS = {'de', 'da', 'do', 'das', 'dos', 'e'}
+
+
+def _titulo_pt(nome: str) -> str:
+    """CAIXA ALTA -> Título Case (maiuscula so na inicial de cada palavra),
+    mantendo preposicoes/conectivos em minusculo quando nao sao a 1a palavra
+    ('Chapadão do Sul', nao 'Chapadão Do Sul' como o .title() do Python
+    produziria). So mexe em texto todo em caixa alta — um nome ja em case
+    misto fica como esta, pra nao estragar um valor que ja esta certo."""
+    if not nome or not nome.isupper():
+        return nome
+    palavras = nome.lower().split(' ')
+    return ' '.join(
+        p if (i > 0 and p in _TITULO_PT_MINUSCULAS) else (p[:1].upper() + p[1:])
+        for i, p in enumerate(palavras)
+    )
 
 
 ORIGENS_DA_BASE = ('existente na base', 'existente', 'interno', 'legalone',
@@ -4532,24 +4550,32 @@ class LegalOneCadastro:
         except Exception as e:
             logger.warning(f"[AGENTQL] Falha ao analisar contexto: {e}")
 
+    def _pagina_e_login(self) -> bool:
+        """URL/titulo atuais indicam tela de login (nao a app autenticada)."""
+        try:
+            title = self.page.title()
+            url = self.page.url or ""
+        except Exception:
+            return False
+        return (
+            "signon.thomsonreuters.com" in url
+            or "auth.thomsonreuters.com" in url
+            or "Sign In" in title
+        )
+
     def garantir_sessao_ativa(self):
         """Inicializa navegador ou recarrega se necessário"""
         if self.page and not self.page.is_closed():
             try:
                 # Verifica se ainda está logado/ativo checando URL ou Title
                 title = self.page.title()
-                url = self.page.url or ""
                 # Execucao longa (loop de horas) pode deixar a sessao do
                 # LegalOne expirar sem fechar a pagina/navegador -> title()
                 # ainda responde, mas a pagina caiu no login do Thomson
                 # Reuters. Sem checar isso aqui, o cadastro seguia direto
                 # pra tela de login e falhava em "Navegar para cadastro
                 # CNJ" (log 18/08 18:41).
-                if (
-                    "signon.thomsonreuters.com" in url
-                    or "auth.thomsonreuters.com" in url
-                    or "Sign In" in title
-                ):
+                if self._pagina_e_login():
                     logger.warning("[SESSAO] Sessão expirada (caiu no login), relogando...")
                     return self.fazer_login()
                 logger.info(f"[SESSAO] Navegador ativo. Título: {title}")
@@ -4662,11 +4688,7 @@ class LegalOneCadastro:
             self._agentql_context("Identificar a tela atual do LegalOne (login ou sessão ativa) e elementos principais.")
 
             # Verifica se caiu na tela de login
-            if (
-                "signon.thomsonreuters.com" in self.page.url
-                or "auth.thomsonreuters.com" in self.page.url
-                or "Sign In" in self.page.title()
-            ):
+            if self._pagina_e_login():
                 return self.fazer_login()
             else:
                 logger.info("✅ Sessão recuperada com sucesso!")
@@ -4677,6 +4699,22 @@ class LegalOneCadastro:
             return False
 
     def _fazer_login_signon_legacy(self):
+        # Corrida com o SSO: o caller viu "Sign In" por um instante (bounce do
+        # signon.thomsonreuters.com), mas a sessao persistida ja era valida e
+        # o redirect automatico pode terminar ANTES de chegarmos aqui. Sem
+        # essa checagem, 'input:visible' pega a barra de busca do Home (o
+        # primeiro input visivel na pagina ja autenticada), digita o usuario
+        # nela, e trava 15s esperando um campo de senha que nunca vai
+        # aparecer — visto ao vivo 11/09/2026 (CNJ 0024767-91.2026.5.24.0101)
+        # e reproduzido isolado em teste headless no mesmo dia.
+        url_atual = ''
+        try:
+            url_atual = (self.page.url or '').lower()
+        except Exception:
+            pass
+        if url_atual and not any(m in url_atual for m in ('login', 'signon', 'auth')):
+            logger.info("   Sessão já autenticada (redirect terminou antes do login legado) — pulando")
+            return True
         username_field = self.page.wait_for_selector('input:visible', timeout=10000)
         if username_field:
             username_field.click()
@@ -5846,6 +5884,17 @@ class LegalOneCadastro:
                 return False
         time.sleep(1)
         try:
+            # O caminho determinístico que roda ANTES deste fallback limpa o
+            # campo a cada tentativa mas desiste sem limpar de novo, deixando
+            # a ULTIMA variante testada (ex.: 'Tributária') no campo. Sem
+            # selecionar tudo aqui, o type() de baixo entra em cima disso e
+            # commita os dois valores concatenados — achado ao vivo
+            # 11/09/2026 (Centro de Custo virou 'TributáriaTributário').
+            self.page.keyboard.press('Control+A')
+            self.page.keyboard.press('Delete')
+        except Exception:
+            pass
+        try:
             self.page.keyboard.type(str(valor)[:40], delay=50)  # vai pro elemento focado
         except Exception:
             pass
@@ -6290,7 +6339,12 @@ class LegalOneCadastro:
                 or self._obter_outro_dado(dados, 'Título', 'Titulo', 'Título do processo', 'Titulo do processo')
             )
             if not titulo_proc and (cliente_raw or contrario_raw):
-                titulo_proc = f"{cliente_raw.title()} x {contrario_raw.title()}".strip(' x')
+                # ponytail: nao usar str.title() aqui — capitaliza QUALQUER
+                # palavra ("Chapadão Do Sul"); _titulo_pt conhece as
+                # preposicoes do portugues E nao mexe se o nome ja veio em
+                # case misto (evita reprocessar um valor ja normalizado
+                # upstream em automacao_legalone_completa.py).
+                titulo_proc = f"{_titulo_pt(cliente_raw)} x {_titulo_pt(contrario_raw)}".strip(' x')
             if titulo_proc:
                 try:
                     titulo_seletor = (
@@ -6545,7 +6599,7 @@ class LegalOneCadastro:
                 logger.info("   ⚠ Campo Responsável principal não encontrado")
 
             # 5. Negociação de contrato de honorários *
-            negociacao = (
+            negociacao_forms = self._valor_limpo(
                 dados.get('negociacao_contrato')
                 or self._obter_outro_dado(
                     dados,
@@ -6555,148 +6609,108 @@ class LegalOneCadastro:
                     'Negociacao honorarios',
                 )
             )
-            negociacao = self._valor_limpo(negociacao)
-            if not negociacao:
-                # Regra de negocio (PROMPT_REFATORACAO_LEGALONE.md, Fase 1
-                # item 7): campo obrigatorio sem dado do Forms -> Pro Bono,
-                # com alerta explicito de que precisa correcao manual.
-                negociacao = 'Pro Bono'
-                logger.warning(
-                    "   ⚠ Negociação de honorários não veio nos dados - "
-                    "usando 'Pro Bono' (requer correção manual posterior)"
+            try:
+                seletor_negociacao = (
+                    self._encontrar_input_por_label_exato('Negociacao de contrato de honorarios')
+                    or '#input-negotiation-contract, input[id*="negotiation"]'
                 )
-                dados.setdefault('_qa_warnings', []).append(
-                    "Negociação de honorários ausente - preenchido 'Pro Bono' "
-                    "automaticamente; corrigir manualmente no LegalOne"
-                )
-            if negociacao:
-                try:
-                    seletor_negociacao = (
-                        self._encontrar_input_por_label_exato('Negociacao de contrato de honorarios')
-                        or '#input-negotiation-contract, input[id*="negotiation"]'
-                    )
-                    campo_negociacao = self.page.query_selector(seletor_negociacao)
-                    valor_atual_negociacao = ''
-                    if campo_negociacao:
-                        valor_atual_negociacao = self.page.evaluate(
-                            """
-                            (el) => {
-                                const limpar = (txt) => (txt || '').replace(/\\s+/g, ' ').trim();
-                                const invalido = (txt) => {
-                                    const t = limpar(txt).toLowerCase();
-                                    if (!t) return true;
-                                    if (['selecione', 'selecionar', 'digite', 'buscar', 'search', ''].includes(t)) return true;
-                                    if (t.includes('negociação de contrato de honorários') || t.includes('negociacao de contrato de honorarios')) return true;
-                                    return false;
-                                };
+                campo_negociacao = self.page.query_selector(seletor_negociacao)
+                valor_atual_negociacao = ''
+                if campo_negociacao:
+                    valor_atual_negociacao = self.page.evaluate(
+                        """
+                        (el) => {
+                            const limpar = (txt) => (txt || '').replace(/\\s+/g, ' ').trim();
+                            const invalido = (txt) => {
+                                const t = limpar(txt).toLowerCase();
+                                if (!t) return true;
+                                if (['selecione', 'selecionar', 'digite', 'buscar', 'search', ''].includes(t)) return true;
+                                if (t.includes('negociação de contrato de honorários') || t.includes('negociacao de contrato de honorarios')) return true;
+                                return false;
+                            };
 
-                                const candidatos = [];
-                                if (el && typeof el.value === 'string') candidatos.push(el.value);
+                            const candidatos = [];
+                            if (el && typeof el.value === 'string') candidatos.push(el.value);
 
-                                const host = el?.closest('bento-combobox, .bento-combobox, [class*="combobox"], [class*="autocomplete"], .form-group, .field-group') || el?.parentElement;
-                                if (host) {
-                                    const seletores = [
-                                        '.bento-chip__content',
-                                        '.bento-tag__label',
-                                        '.bento-combobox-selection-item',
-                                        '.selected-item',
-                                        '.mat-mdc-chip-action-label',
-                                        '.mat-chip',
-                                        '[aria-selected="true"]',
-                                        '.ng-value-label',
-                                    ];
-                                    for (const s of seletores) {
-                                        for (const node of host.querySelectorAll(s)) {
-                                            const txt = limpar(node.innerText || node.textContent || '');
-                                            if (txt) candidatos.push(txt);
-                                        }
+                            const host = el?.closest('bento-combobox, .bento-combobox, [class*="combobox"], [class*="autocomplete"], .form-group, .field-group') || el?.parentElement;
+                            if (host) {
+                                const seletores = [
+                                    '.bento-chip__content',
+                                    '.bento-tag__label',
+                                    '.bento-combobox-selection-item',
+                                    '.selected-item',
+                                    '.mat-mdc-chip-action-label',
+                                    '.mat-chip',
+                                    '[aria-selected="true"]',
+                                    '.ng-value-label',
+                                ];
+                                for (const s of seletores) {
+                                    for (const node of host.querySelectorAll(s)) {
+                                        const txt = limpar(node.innerText || node.textContent || '');
+                                        if (txt) candidatos.push(txt);
                                     }
                                 }
-
-                                for (const c of candidatos) {
-                                    if (!invalido(c)) return limpar(c);
-                                }
-                                return '';
                             }
-                            """,
-                            campo_negociacao,
-                        ) or ''
 
-                    valor_atual_negociacao = (valor_atual_negociacao or '').strip()
-                    if valor_atual_negociacao and self._contrato_honorarios_bate(valor_atual_negociacao, negociacao):
+                            for (const c of candidatos) {
+                                if (!invalido(c)) return limpar(c);
+                            }
+                            return '';
+                        }
+                        """,
+                        campo_negociacao,
+                    ) or ''
+                valor_atual_negociacao = (valor_atual_negociacao or '').strip()
+
+                if negociacao_forms:
+                    # Forms trouxe um valor explicito: ele manda, mesmo que ja
+                    # exista algo diferente no campo (achado 19/08/2026: o
+                    # LegalOne as vezes auto-sugere o contrato mais recente do
+                    # cliente, que pode nao ser o certo pra este processo).
+                    if valor_atual_negociacao and self._contrato_honorarios_bate(
+                        valor_atual_negociacao, negociacao_forms
+                    ):
                         logger.info(f"   ✓ Negociação de contrato de honorários já preenchido: '{valor_atual_negociacao}' — pulando")
                     else:
                         if valor_atual_negociacao:
                             logger.warning(
                                 f"   ⚠ Negociação de contrato de honorários tinha '{valor_atual_negociacao}' "
-                                f"(Forms pede '{negociacao}') — sobrescrevendo")
+                                f"(Forms pede '{negociacao_forms}') — sobrescrevendo")
                         self.preencher_campo_autocomplete(
-                            seletor_negociacao,
-                            negociacao,
-                            'Negociação de contrato de honorários',
-                            permitir_adicionar=False,
+                            seletor_negociacao, negociacao_forms,
+                            'Negociação de contrato de honorários', permitir_adicionar=False,
                         )
                         if not self._valor_limpo(self._ler_valor_campo_formulario('Negociação de contrato de honorários')):
                             self.preencher_campo_autocomplete(
-                                seletor_negociacao,
-                                negociacao,
-                                'Negociação de contrato de honorários',
-                                permitir_adicionar=False,
+                                seletor_negociacao, negociacao_forms,
+                                'Negociação de contrato de honorários', permitir_adicionar=False,
                             )
-                except Exception:
-                    logger.info("   ⚠ Campo Negociação de contrato de honorários não encontrado")
-            else:
-                logger.info("   ℹ Negociação de contrato de honorários não informada; preenchendo com 'Negociação padrão'")
-                try:
-                    seletor_negociacao = (
-                        self._encontrar_input_por_label_exato('Negociacao de contrato de honorarios')
-                        or '#input-negotiation-contract, input[id*="negotiation"]'
+                elif valor_atual_negociacao:
+                    # Forms nao trouxe nada, mas o campo ja tem algo (ex.:
+                    # auto-sugestao do LegalOne) — manter, nao sobrescrever
+                    # com um chute. Achado ao vivo 11/09/2026: sobrescrevia
+                    # 'Hon - 0000379' (valor real) com 'Pro Bono' so' porque
+                    # o Forms nao perguntou isso pra esta natureza.
+                    logger.info(f"   ✓ Negociação de contrato de honorários já preenchido: '{valor_atual_negociacao}' — pulando")
+                else:
+                    # Campo REALMENTE vazio e Forms tambem nao informou:
+                    # regra de negocio (PROMPT_REFATORACAO_LEGALONE.md, Fase 1
+                    # item 7) — Pro Bono com alerta explicito de correcao manual.
+                    negociacao = 'Pro Bono'
+                    logger.warning(
+                        "   ⚠ Negociação de honorários não veio nos dados - "
+                        "usando 'Pro Bono' (requer correção manual posterior)"
                     )
-                    campo_negociacao = self.page.query_selector(seletor_negociacao)
-                    valor_atual_negociacao = ''
-                    if campo_negociacao:
-                        valor_atual_negociacao = self.page.evaluate(
-                            """
-                            (el) => {
-                                const limpar = (txt) => (txt || '').replace(/\\s+/g, ' ').trim();
-                                const invalido = (txt) => {
-                                    const t = limpar(txt).toLowerCase();
-                                    if (!t) return true;
-                                    if (['selecione', 'selecionar', 'digite', 'buscar', 'search', ''].includes(t)) return true;
-                                    if (t.includes('negociação de contrato de honorários') || t.includes('negociacao de contrato de honorarios')) return true;
-                                    return false;
-                                };
-                                const candidatos = [];
-                                if (el && typeof el.value === 'string') candidatos.push(el.value);
-                                const host = el?.closest('bento-combobox, .bento-combobox, [class*="combobox"], [class*="autocomplete"], .form-group, .field-group') || el?.parentElement;
-                                if (host) {
-                                    const seletores = ['.bento-chip__content', '.bento-tag__label', '.bento-combobox-selection-item', '.selected-item', '.mat-mdc-chip-action-label', '.mat-chip', '[aria-selected="true"]', '.ng-value-label'];
-                                    for (const s of seletores) {
-                                        for (const node of host.querySelectorAll(s)) {
-                                            const txt = limpar(node.innerText || node.textContent || '');
-                                            if (txt) candidatos.push(txt);
-                                        }
-                                    }
-                                }
-                                for (const c of candidatos) { if (!invalido(c)) return limpar(c); }
-                                return '';
-                            }
-                            """,
-                            campo_negociacao,
-                        ) or ''
-                    valor_atual_negociacao = (valor_atual_negociacao or '').strip()
-                    if valor_atual_negociacao:
-                        logger.info(f"   ✓ Negociação de contrato de honorários já preenchido: '{valor_atual_negociacao}' — pulando")
-                    else:
-                        self.preencher_campo_autocomplete(
-                            seletor_negociacao,
-                            'Negociação padrão',
-                            'Negociação de contrato de honorários',
-                            permitir_adicionar=False,
-                        )
-                        logger.info("   ✓ Negociação de contrato de honorários preenchida com 'Negociação padrão'")
-                except Exception:
-                    logger.info("   ⚠ Campo Negociação de contrato de honorários não encontrado")
+                    dados.setdefault('_qa_warnings', []).append(
+                        "Negociação de honorários ausente - preenchido 'Pro Bono' "
+                        "automaticamente; corrigir manualmente no LegalOne"
+                    )
+                    self.preencher_campo_autocomplete(
+                        seletor_negociacao, negociacao,
+                        'Negociação de contrato de honorários', permitir_adicionar=False,
+                    )
+            except Exception:
+                logger.info("   ⚠ Campo Negociação de contrato de honorários não encontrado")
 
             # 6. Data da baixa *
             data_baixa = (
@@ -9791,7 +9805,13 @@ class LegalOneCadastro:
         if data_dist and self._estado_campo('DataDistribuicao') == 'vazio':
             self._preencher_data_por_id('DataDistribuicao', data_dist)
 
-        self._preencher_pedidos_recurso(dados)
+        # Guardar em dados['_pedidos_stats'] pra o email de sucesso mostrar
+        # "Pedidos: X/Y" — sem isso, um pedido que falhou aqui fica invisivel
+        # e o email declara sucesso completo (falso positivo visto ao vivo
+        # 11/09/2026: recurso 0000048-17.2010.8.02.0053, 1 pedido falhou e o
+        # email de OK nao avisou nada porque essa chamada descartava o retorno).
+        preenchidos_ped, total_ped = self._preencher_pedidos_recurso(dados)
+        dados.setdefault('_pedidos_stats', {'preenchidos': preenchidos_ped, 'total': total_ped})
 
         # ponytail: Objetos fica de fora — e' campo de CATALOGO (frases curtas
         # tipo 'Benefício da Justiça Gratuita'), nao texto livre; o paragrafo
@@ -9800,6 +9820,9 @@ class LegalOneCadastro:
         # match de baixa confianca e' pior que deixar em branco).
         if dados.get('objetos_recurso'):
             logger.warning("   ⚠ [RECURSO CÍVEL] preencher manualmente: objetos_recurso")
+            dados.setdefault('_qa_warnings', []).append(
+                "Objetos do recurso não preenchidos — sem match confiável no catálogo, preencher manualmente."
+            )
 
         # Estado real da tela antes do POST: o log de cada lookup mostra a opcao
         # ESCOLHIDA, nao o que ficou no campo — sem isso nao da' para saber se a
@@ -10819,6 +10842,156 @@ class LegalOneCadastro:
         self._validar_justificativas_honorarios(dados)
         return self._preencher_previsao_e_resultado(dados)
 
+    # ── Tarefas pos-cadastro: revisao da Maria + ciencia do advogado ───────
+
+    def _resolver_advogado_responsavel(self, dados_processo: dict) -> tuple[str, str] | None:
+        """Mesma fonte do Responsavel principal do processo (linha ~6499),
+        sem a alavanca LEGALONE_RESPONSAVEL_FORCADO (essa e' so' para o
+        preenchimento do cadastro, nao para quem recebe a tarefa)."""
+        bruto = (
+            dados_processo.get('responsavel')
+            or dados_processo.get('advogado')
+            or self._obter_outro_dado(
+                dados_processo,
+                'Responsável principal',
+                'Responsavel principal',
+                'Advogado responsável',
+                'Advogado responsavel',
+                'Advogado',
+            )
+        )
+        bruto = self._valor_limpo(bruto) or 'Paollo Sanchez'
+        return equipe.resolver(bruto)
+
+    def _montar_tarefas_pos_cadastro(
+        self, dados_processo: dict, agora: datetime | None = None
+    ) -> list[dict]:
+        """Revisao da Maria Karolyne sempre; ciencia do advogado responsavel
+        quando o nome resolve para alguem da equipe. Prazo: 2 dias corridos
+        para as duas, combinado com o usuario em 10/09/2026."""
+        agora = agora or datetime.now()
+        conclusao = agora + timedelta(days=2)
+        cnj = dados_processo.get('cnj', 'N/A')
+
+        maria_email = equipe.EQUIPE['Maria Karolyne Moraes Malard']
+        tarefas = [{
+            'descricao': f"Revisar cadastro do processo {cnj}",
+            'envolvido_nome': 'Maria Karolyne Moraes Malard',
+            'envolvido_email': maria_email,
+            'inicio': agora,
+            'conclusao': conclusao,
+        }]
+
+        responsavel = self._resolver_advogado_responsavel(dados_processo)
+        if responsavel:
+            nome, email = responsavel
+            tarefas.append({
+                'descricao': f"Processo {cnj} cadastrado — ciência",
+                'envolvido_nome': nome,
+                'envolvido_email': email,
+                'inicio': agora,
+                'conclusao': conclusao,
+            })
+        return tarefas
+
+    def _abrir_nova_tarefa(self) -> bool:
+        """Abre o popover 'Adicionar' > 'Nova tarefa' na aba Compromissos e
+        tarefas. ponytail: o popover nao abriu de forma confiavel via clique
+        automatizado numa exploracao anterior (10/09/2026) — varias
+        estrategias aqui, ainda sem confirmacao ao vivo de qual pega.
+        Upgrade: se nenhuma funcionar, trocar por POST direto no endpoint
+        /processos/Tarefas/CreateFromProcesso/{id}."""
+        for estrategia in (
+            lambda: self._click_by_text(['Adicionar']),
+            lambda: self.page.get_by_text('Adicionar', exact=True).click(force=True),
+        ):
+            try:
+                estrategia()
+                self.page.wait_for_timeout(400)
+                if self._click_by_text(['Nova tarefa']):
+                    if self.page.wait_for_selector(
+                        "text=Criando nova tarefa do processo", timeout=3000
+                    ):
+                        return True
+            except Exception:
+                continue
+        return False
+
+    def _criar_uma_tarefa(self, tarefa: dict) -> bool:
+        try:
+            if not self._abrir_nova_tarefa():
+                logger.warning(f"   [TAREFA] Nao consegui abrir 'Nova tarefa' para: {tarefa['descricao']}")
+                return False
+
+            self._fill_by_label('Descrição', tarefa['descricao'])
+            self._fill_by_label('Início previsto/efetivo', tarefa['inicio'].strftime('%d/%m/%Y'))
+            self._fill_by_label('Conclusão prevista', tarefa['conclusao'].strftime('%d/%m/%Y'))
+
+            if self._click_by_text(['Adicionar envolvido']):
+                nome_seletor = self._encontrar_input_por_label_exato('Nome')
+                if nome_seletor:
+                    self.preencher_campo_autocomplete(
+                        nome_seletor, tarefa['envolvido_nome'], 'Nome', permitir_adicionar=False,
+                    )
+                else:
+                    logger.warning("   [TAREFA] Campo 'Nome' do envolvido nao encontrado.")
+                self.page.get_by_text('Responsável', exact=True).last.click()
+
+            self._click_by_text(['Salvar e fechar'])
+            self.page.wait_for_load_state('networkidle')
+            logger.info(f"   [TAREFA] Criada: {tarefa['descricao']} → {tarefa['envolvido_nome']}")
+            return True
+        except Exception as e:
+            logger.warning(f"   [TAREFA] Falha ao criar '{tarefa['descricao']}': {e}")
+            return False
+
+    def criar_tarefas_pos_cadastro(self, dados_processo: dict) -> None:
+        """Chamada pelo orquestrador apos QUALQUER cadastro bem-sucedido
+        (inicial, decisao, recurso, arquivamento). Falha aqui nunca derruba
+        o cadastro, que ja aconteceu — so loga aviso."""
+        cnj = dados_processo.get('cnj')
+        if not cnj or not self._garantir_pagina_processo_edicao(cnj):
+            logger.warning("   [TAREFA] Nao foi possivel garantir a pagina do processo — pulando tarefas.")
+            return
+        if not self._click_by_text(['Compromissos e tarefas']):
+            logger.warning("   [TAREFA] Aba 'Compromissos e tarefas' nao encontrada — pulando tarefas.")
+            return
+        for tarefa in self._montar_tarefas_pos_cadastro(dados_processo):
+            self._criar_uma_tarefa(tarefa)
+
+    def _montar_tarefa_correcao(self, dados_correcao: dict, agora: datetime | None = None) -> dict:
+        """A partir do e-mail 'LegalOne - Correcao Necessaria' (disparado pelo
+        fluxo do Teams quando alguem clica 'Nao validei'). O advogado ja vem
+        resolvido no payload — nao precisa de equipe.resolver aqui."""
+        agora = agora or datetime.now()
+        cnj = dados_correcao.get('cnj', 'N/A')
+        motivo = (dados_correcao.get('motivo') or '').strip()
+        quem = dados_correcao.get('quem_recusou', '?')
+        descricao = f"Corrigir processo {cnj} — reprovado por {quem}"
+        if motivo:
+            descricao += f": {motivo}"
+        return {
+            'descricao': descricao,
+            'envolvido_nome': dados_correcao.get('advogado_nome'),
+            'envolvido_email': dados_correcao.get('advogado_email'),
+            'inicio': agora,
+            'conclusao': agora + timedelta(days=2),
+        }
+
+    def criar_tarefa_correcao(self, dados_correcao: dict) -> None:
+        """Chamada pelo orquestrador ao processar um e-mail de correcao.
+        Falha aqui so loga aviso — nao ha cadastro a proteger neste fluxo."""
+        if not self.garantir_sessao_ativa():
+            logger.warning("   [TAREFA] Nao foi possivel iniciar navegador — pulando correcao.")
+            return
+        cnj = dados_correcao.get('cnj')
+        if not cnj or not self._garantir_pagina_processo_edicao(cnj):
+            logger.warning("   [TAREFA] Nao foi possivel garantir a pagina do processo — pulando correcao.")
+            return
+        if not self._click_by_text(['Compromissos e tarefas']):
+            logger.warning("   [TAREFA] Aba 'Compromissos e tarefas' nao encontrada — pulando correcao.")
+            return
+        self._criar_uma_tarefa(self._montar_tarefa_correcao(dados_correcao))
 
     def cadastrar_processo(self, dados_processo):
         """Fluxo de cadastro usando sessão persistente"""

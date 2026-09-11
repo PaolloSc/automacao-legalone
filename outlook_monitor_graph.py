@@ -65,11 +65,14 @@ class OutlookMonitorGraph:
 
     # Assunto usado pelo fluxo Power Automate do Copilot Studio
     COPILOT_ASSUNTO = "LegalOne - Dados Extraidos de Peticao"
+    # Assunto usado pelo fluxo de validacao no Teams quando alguem clica
+    # 'Nao validei' (docs/FLUXO_TEAMS_VALIDACAO.md)
+    CORRECAO_ASSUNTO = "LegalOne - Correcao Necessaria"
 
     def __init__(
         self,
         assunto_filtro: str | list[str] = "Cadastro de processos NOVOS LegalOne trabalhista",
-        remetente_filtro: str = "microsoft.com",
+        remetente_filtro: str = "microsoft",
         intervalo_checagem: int = 300,
     ):
         # Suporta um único assunto (compatibilidade) ou lista de assuntos (multinatureza)
@@ -208,7 +211,8 @@ class OutlookMonitorGraph:
         filtro_str = (
             f"receivedDateTime ge {data_limite}"
             f" and (({assuntos_forms})"
-            f" or contains(subject, '{self.COPILOT_ASSUNTO}'))"
+            f" or contains(subject, '{self.COPILOT_ASSUNTO}')"
+            f" or contains(subject, '{self.CORRECAO_ASSUNTO}'))"
         )
 
         url = (
@@ -250,10 +254,31 @@ class OutlookMonitorGraph:
             subject = msg.get("subject", "")
             corpo = msg.get("body", {}).get("content", "")
 
-            # Detecta se é email do Copilot (JSON) ou do Forms (link)
+            # Detecta se é email de correcao (Teams 'Nao validei'), do Copilot
+            # (JSON) ou do Forms (link)
+            is_correcao = self.CORRECAO_ASSUNTO.lower() in subject.lower()
             is_copilot = self.COPILOT_ASSUNTO.lower() in subject.lower()
 
-            if is_copilot:
+            if is_correcao:
+                json_data = self._extrair_json_do_corpo(corpo)
+                if not json_data:
+                    logger.warning(f"[CORRECAO] Email '{subject}' sem JSON válido no corpo — ignorado")
+                    continue
+
+                dados = {
+                    "subject": subject,
+                    "sender": sender_addr,
+                    "received_time": msg.get("receivedDateTime", ""),
+                    "body": corpo,
+                    "entry_id": msg_id,
+                    "forms_link": None,
+                    "dados_correcao": json_data,
+                }
+                emails_encontrados.append(dados)
+                self.emails_processados.add(chave)
+                logger.info(f"[CORRECAO] Email de correcao detectado: CNJ={json_data.get('cnj', '?')}")
+
+            elif is_copilot:
                 # Email do Copilot: corpo contém JSON, sem filtro de remetente
                 json_data = self._extrair_json_do_corpo(corpo)
                 if not json_data:

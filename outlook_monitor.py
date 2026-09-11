@@ -29,7 +29,7 @@ class OutlookMonitor:
 
     def __init__(self,
                  assunto_filtro="Cadastro de processos NOVOS LegalOne trabalhista",
-                 remetente_filtro="microsoft.com",
+                 remetente_filtro="microsoft",
                  intervalo_checagem=300):
         """
         Inicializa o monitor do Outlook

@@ -11,6 +11,7 @@ import concurrent.futures
 import os
 import re
 import smtplib
+import subprocess
 import traceback
 import unicodedata
 from email.mime.multipart import MIMEMultipart
@@ -47,6 +48,7 @@ except ImportError:
 from forms_extractor import FormsExtractor
 from utils.log_formatter import setup_logging
 from config_automacao import LOGGING_CONFIG, FORMS_TIPOS
+import equipe
 
 try:
     from forms_extractor_enhanced import EnhancedFormsExtractor
@@ -54,7 +56,7 @@ try:
 except Exception:
     ENHANCED_DISPONIVEL = False
 
-from legalone_cadastro import LegalOneCadastro
+from legalone_cadastro import LegalOneCadastro, _titulo_pt
 from forms_mapping import TIPO_TAREFA_POR_CADASTRO as TIPO_TAREFA_TRABALHISTA
 from forms_mapping import detectar_tipo_cadastro as detectar_tipo_trabalhista
 
@@ -164,6 +166,24 @@ def rotulos_email_sucesso(
     }
 
 
+def _montar_payload_teams_validacao(
+    dados_processo: dict, advogado_nome: str, advogado_email: str, maria_email: str
+) -> dict:
+    """Payload pro fluxo do Power Automate que posta o Adaptive Card
+    Validei/Nao validei pro advogado e, no clique, avisa a Maria — ver
+    docs/FLUXO_TEAMS_VALIDACAO.md. Puro — a chamada HTTP fica em
+    _notificar_teams_sucesso."""
+    return {
+        'cnj': dados_processo.get('cnj', 'N/A'),
+        'pasta': dados_processo.get('numero_pasta') or 'N/A',
+        'cliente': dados_processo.get('cliente') or dados_processo.get('autor') or 'N/A',
+        'contrario': dados_processo.get('contrario') or dados_processo.get('reu') or 'N/A',
+        'advogado_nome': advogado_nome,
+        'advogado_email': advogado_email,
+        'maria_email': maria_email,
+    }
+
+
 def detectar_tipo_forms_pelo_assunto(subject: str | None) -> dict:
     """Escolhe o mapeador/natureza default a partir do assunto do e-mail."""
     subject_norm = str(subject or "").lower()
@@ -187,7 +207,7 @@ class AutomacaoLegalOne:
         self.config = {
             'outlook': {
                 'assunto_filtro': [cfg["assunto_filtro"] for cfg in FORMS_TIPOS],
-                'remetente_filtro': 'microsoft.com',
+                'remetente_filtro': 'microsoft',  # Forms manda de forms.mail.microsoft (sem .com)
                 'intervalo_checagem': 300,
                 'fonte_email': os.getenv('EMAIL_SOURCE', 'auto'),
             },
@@ -626,6 +646,11 @@ class AutomacaoLegalOne:
         try:
             self.stats['emails_recebidos'] += 1
 
+            if email_data.get('dados_correcao'):
+                logger.info("\n[CORRECAO] Email de correcao (Teams 'Nao validei') — criando tarefa...")
+                self.legalone.criar_tarefa_correcao(email_data['dados_correcao'])
+                return
+
             logger.info("\n" + "="*80)
             logger.info("[EMAIL] NOVO EMAIL!")
             logger.info("="*80)
@@ -843,6 +868,13 @@ class AutomacaoLegalOne:
                 dados_processo['cnpj_contrario'] = documento_contrario if len(digitos) == 14 else None
             # ----- END missing field mapping -----
 
+            # Nomes de partes vem do Forms em CAIXA ALTA — LegalOne salva o
+            # texto literal. Padroniza pra norma do portugues (maiuscula so
+            # na inicial) antes de qualquer campo/contato ser preenchido.
+            for _campo_nome in ('cliente', 'contrario', 'autor', 'reu'):
+                if dados_processo.get(_campo_nome):
+                    dados_processo[_campo_nome] = _titulo_pt(dados_processo[_campo_nome])
+
             if not cnj_valido(dados_processo.get('cnj')):
                 logger.error(
                     f"[ERRO] CNJ inválido ou ausente: "
@@ -1000,6 +1032,17 @@ class AutomacaoLegalOne:
                     self._enviar_email_sucesso(email_data, dados_processo)
                 except Exception as _e_ok:
                     logger.warning(f"[EMAIL-OK] Falha ao enviar email de sucesso: {_e_ok}")
+                # 'Ja cadastrado, nada a fazer' nao e' cadastro novo — nao gera
+                # tarefa de revisao nem notificacao pra ninguem.
+                if not getattr(self.legalone, '_ja_cadastrado_nada_a_fazer', False):
+                    try:
+                        self.legalone.criar_tarefas_pos_cadastro(dados_processo)
+                    except Exception as _e_tarefa:
+                        logger.warning(f"[TAREFA] Falha ao criar tarefas de revisao/aviso: {_e_tarefa}")
+                    try:
+                        self._notificar_teams_sucesso(dados_processo)
+                    except Exception as _e_teams:
+                        logger.warning(f"[TEAMS] Falha ao notificar Teams: {_e_teams}")
             else:
                 self.stats['erros'] += 1
                 logger.error("\n[ERRO] FALHA NO CADASTRO!")
@@ -1130,6 +1173,34 @@ class AutomacaoLegalOne:
             return False, f"Graph retornou {resp.status_code}: {resp.text[:300]}"
         except Exception as e:
             return False, f"Falha no Graph: {e}"
+
+    def _notificar_teams_sucesso(self, dados_processo: dict) -> None:
+        """Aciona o fluxo do Power Automate que posta o Adaptive Card
+        Validei/Nao validei pro advogado responsavel e, no clique, avisa a
+        Maria — ver docs/FLUXO_TEAMS_VALIDACAO.md. So um POST; quem monta e
+        posta o card e' o fluxo, nao o Python. Falha aqui nunca derruba o
+        cadastro — so loga aviso (mesma postura do e-mail de sucesso)."""
+        webhook_url = os.getenv('TEAMS_VALIDACAO_FLOW_URL')
+        if not webhook_url:
+            logger.info("[TEAMS] TEAMS_VALIDACAO_FLOW_URL nao configurado — pulando notificacao.")
+            return
+
+        responsavel = self.legalone._resolver_advogado_responsavel(dados_processo)
+        if not responsavel:
+            logger.warning("[TEAMS] Advogado responsavel nao resolvido — pulando notificacao.")
+            return
+        nome, email = responsavel
+        maria_email = equipe.EQUIPE['Maria Karolyne Moraes Malard']
+
+        payload = _montar_payload_teams_validacao(dados_processo, nome, email, maria_email)
+        try:
+            resp = requests.post(webhook_url, json=payload, timeout=30)
+            if resp.status_code < 300:
+                logger.info(f"[TEAMS] Fluxo de validacao acionado para {nome} sobre CNJ {dados_processo.get('cnj')}.")
+            else:
+                logger.warning(f"[TEAMS] Fluxo retornou {resp.status_code}: {resp.text[:300]}")
+        except Exception as e:
+            logger.warning(f"[TEAMS] Falha ao acionar fluxo: {e}")
 
     def _enviar_email_erro_smtp(self, notificacao: dict) -> tuple[bool, str]:
         host = os.getenv('SMTP_HOST')
@@ -1522,7 +1593,54 @@ def main():
         automacao.iniciar()
 
 
+LOCK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "automacao.lock")
+
+
+def _pid_vivo(pid: int) -> bool:
+    """Windows: tasklist e' o mesmo mecanismo ja usado pelo iniciar_automacao.bat."""
+    try:
+        saida = subprocess.check_output(
+            ["tasklist", "/FI", f"PID eq {pid}"], text=True, errors="ignore"
+        )
+        return str(pid) in saida
+    except Exception:
+        return False
+
+
+def _adquirir_lock_unico() -> bool:
+    """Impede duas instancias rodando ao mesmo tempo contra a mesma caixa —
+    causa raiz do 'abre duas telas / salva duas vezes' (11/09/2026): o
+    supervisor do iniciar_automacao.bat sobe uma instancia nova sempre que a
+    anterior morre, e nada impedia uma segunda instancia manual ou uma
+    reexecucao da tarefa agendada de rodar em paralelo com ela."""
+    if os.path.exists(LOCK_FILE):
+        try:
+            pid_antigo = int(open(LOCK_FILE).read().strip())
+        except (ValueError, OSError):
+            pid_antigo = None
+        if pid_antigo and _pid_vivo(pid_antigo):
+            logger.error(
+                f"[LOCK] Ja existe uma automacao rodando (PID {pid_antigo}). "
+                "Encerrando esta instancia para nao duplicar cadastros."
+            )
+            return False
+        logger.warning(f"[LOCK] Lock antigo (PID {pid_antigo}) morto — assumindo.")
+    with open(LOCK_FILE, "w") as f:
+        f.write(str(os.getpid()))
+    return True
+
+
+def _liberar_lock_unico() -> None:
+    try:
+        if os.path.exists(LOCK_FILE) and int(open(LOCK_FILE).read().strip()) == os.getpid():
+            os.remove(LOCK_FILE)
+    except Exception:
+        pass
+
+
 if __name__ == "__main__":
+    if not _adquirir_lock_unico():
+        sys.exit(1)
     try:
         main()
     except Exception as e:
@@ -1530,3 +1648,5 @@ if __name__ == "__main__":
         logger.exception(e)
         input("\nEnter para sair...")
         sys.exit(1)
+    finally:
+        _liberar_lock_unico()

@@ -6,7 +6,9 @@ import os
 # ==================== OUTLOOK ====================
 OUTLOOK_CONFIG = {
     'assunto_filtro': 'Cadastro de processos NOVOS LegalOne trabalhista',
-    'remetente_filtro': 'microsoft.com',  # Emails do Forms vem de @microsoft.com
+    # Forms mudou o dominio de envio p/ 'forms.mail.microsoft' (sem .com) em
+    # ago/2026; 'microsoft.com' sozinho passou a derrubar 100% dos emails.
+    'remetente_filtro': 'microsoft',
     'intervalo_checagem': 300,  # 5 minutos
 }
 
@@ -94,7 +96,7 @@ LEGALONE_API_CONFIG = {
     'client_id': os.getenv('LEGALONE_API_CLIENT_ID', ''),
     'client_secret': os.getenv('LEGALONE_API_CLIENT_SECRET', ''),
     'token_url': os.getenv('LEGALONE_API_TOKEN_URL', 'https://api.thomsonreuters.com/legalone/oauth?grant_type=client_credentials'),
-    'base_url': os.getenv('LEGALONE_API_BASE', 'https://api.thomsonreuters.com/legalone/lawsuit/v1/api/rest/v1'),
+    'base_url': os.getenv('LEGALONE_API_BASE', 'https://api.thomsonreuters.com/legalone/v1/api/rest'),
     'default_status_id': os.getenv('LEGALONE_DEFAULT_STATUS_ID', ''),
     'default_area_id': os.getenv('LEGALONE_DEFAULT_AREA_ID', ''),
     'timeout': 30,
